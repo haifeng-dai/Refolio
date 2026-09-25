@@ -54,6 +54,10 @@ actor LocalAttachmentFileStore: AttachmentFileStore {
         }
     }
 
+    func url(for relativePath: String) async throws -> URL {
+        try fileURL(for: relativePath)
+    }
+
     nonisolated static func storedFileName(attachmentID: UUID, originalFileName: String) -> String {
         let digest = SHA256.hash(data: Data(attachmentID.uuidString.utf8))
         let prefix = digest.prefix(3).map { String(format: "%02x", $0) }.joined()

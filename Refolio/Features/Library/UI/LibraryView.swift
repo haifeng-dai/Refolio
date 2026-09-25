@@ -1,199 +1,89 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
   private let sidebarMinimumWidth: CGFloat = 180
-  private let sidebarMaximumWidth: CGFloat = 340
-  private let inspectorMinimumWidth: CGFloat = 180
-  private let inspectorIdealWidth: CGFloat = 260
-  private let inspectorMaximumWidth: CGFloat = 300
+  private let sidebarIdealWidth: CGFloat = 220
+  private let sidebarMaximumWidth: CGFloat = 280
+  private let inspectorMinimumWidth: CGFloat = 300
+  private let inspectorIdealWidth: CGFloat = 320
+  private let inspectorMaximumWidth: CGFloat = 480
+
   @Environment(LibraryViewModel.self) private var viewModel
+  @Environment(\.openWindow) private var openWindow
+  @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var showingNewItem = false
   @State private var showingNewFolder = false
   @State private var showingAttachmentImporter = false
   @State private var pendingAttachmentImport: AttachmentImportRequest?
-  @State private var isInspectorPresented = true
+  @State private var isDetailPresented = true
   @State private var selectedItemID: UUID?
+  @State private var lastItemClick: (id: UUID, time: TimeInterval)?
   @State private var editingItem: LibraryItem?
   @State private var actionError: String?
 
   var body: some View {
-    NavigationSplitView {
-      List(selection: Bindable(viewModel).selectedFolder) {
-        Section("Library") {
-          HStack {
-            Label("All Items", systemImage: "books.vertical")
-            Spacer()
-            Text(viewModel.items.filter { !$0.isTrashed }.count.formatted())
-              .foregroundStyle(.secondary)
-          }
-          .tag(FolderSelection.allItems)
-          HStack {
-            Label("Unfiled", systemImage: "tray")
-            Spacer()
-            Text(viewModel.unfiledCount.formatted())
-              .foregroundStyle(.secondary)
-          }
-          .tag(FolderSelection.unfiled)
-          HStack {
-            Label("Recycle Bin", systemImage: "trash")
-            Spacer()
-            Text(viewModel.trashCount.formatted())
-              .foregroundStyle(.secondary)
-          }
-          .tag(FolderSelection.trash)
-        }
-        Section("Folders") {
-          ForEach(viewModel.folders) { folder in
-            HStack {
-              Label(folder.name, systemImage: "folder")
-              Spacer()
-              Text(folder.itemCount.formatted())
-                .foregroundStyle(.secondary)
+    NavigationSplitView(columnVisibility: $columnVisibility) {
+      sidebar
+        .navigationTitle("Library")
+        .navigationSplitViewColumnWidth(
+          min: sidebarMinimumWidth,
+          ideal: sidebarIdealWidth,
+          max: sidebarMaximumWidth
+        )
+        .toolbar {
+          ToolbarItem(placement: .automatic) {
+            Button("New Folder", systemImage: "folder.badge.plus") {
+              showingNewFolder = true
             }
-            .tag(FolderSelection.folder(folder.id))
+            .labelStyle(.iconOnly)
+            .help("Create a folder")
           }
         }
-      }
-      .navigationSplitViewColumnWidth(
-        min: sidebarMinimumWidth,
-        ideal: sidebarMinimumWidth,
-        max: sidebarMaximumWidth
-      )
-      .toolbar {
-        ToolbarItem(placement: .automatic) {
-          Button("New Folder", systemImage: "folder.badge.plus") {
-            showingNewFolder = true
-          }
-          .labelStyle(.iconOnly)
-          .help("Create a folder")
-        }
-      }
     } detail: {
-      Group {
-        if viewModel.filteredItems.isEmpty {
-          Group {
-            if viewModel.selectedFolder == .trash {
-              ContentUnavailableView(
-                "Recycle Bin Is Empty",
-                systemImage: "trash",
-                description: Text("Items you move to the recycle bin will appear here.")
-              )
-            } else if !viewModel.items.contains(where: { !$0.isTrashed }) {
-              ContentUnavailableView(
-                "Your Library Is Empty",
-                systemImage: "books.vertical",
-                description: Text("Add an item to start building your library.")
-              )
-            } else {
-              ContentUnavailableView(
-                "No Items",
-                systemImage: "doc.text.magnifyingglass",
-                description: Text("There are no items in this folder matching your search.")
-              )
-            }
-          }
-        } else {
-          List(selection: $selectedItemID) {
-            ForEach(viewModel.filteredItems) { item in
-              ItemRow(item: item)
-                .tag(item.id)
-                .contextMenu {
-                  if item.isTrashed {
-                    Button("Restore Item", systemImage: "arrow.uturn.backward") {
-                      actionError = viewModel.restore(item)
-                    }
-                  } else {
-                    Button("Edit", systemImage: "pencil") {
-                      editingItem = item
-                    }
-                    Menu("Add File", systemImage: "paperclip") {
-                      ForEach(AttachmentRole.allCases) { role in
-                        Button("\(role.menuTitle)…") {
-                          pendingAttachmentImport = AttachmentImportRequest(itemID: item.id, role: role)
-                          showingAttachmentImporter = true
-                        }
-                      }
-                    }
-                    if !item.attachments.isEmpty {
-                      Menu("Open File", systemImage: "doc") {
-                        ForEach(item.attachments) { attachment in
-                          Button("\(attachment.role.menuTitle) · \(attachment.fileName)") {
-                            Task {
-                              actionError = await viewModel.openAttachment(attachment.id, for: item.id)
-                            }
-                          }
-                        }
-                      }
-                    }
-                    if !viewModel.folders.isEmpty {
-                      Menu("Add to Folder", systemImage: "folder") {
-                        ForEach(viewModel.folders) { folder in
-                          Button(folder.name) {
-                            actionError = viewModel.addItem(item, to: folder)
-                          }
-                          .disabled(item.folderIDs.contains(folder.id))
-                        }
-                      }
-                    }
-                    Button("Move to Recycle Bin", systemImage: "trash") {
-                      actionError = viewModel.moveToTrash(item)
-                    }
-                  }
-                }
-            }
-          }
-          .inspector(isPresented: $isInspectorPresented) {
-            Group {
-              if let selectedItemID,
-                 let item = viewModel.filteredItems.first(where: { $0.id == selectedItemID }) {
-                ItemDetailView(item: item)
-              } else {
-                ContentUnavailableView(
-                  "Select an Item",
-                  systemImage: "book",
-                  description: Text("Choose an item to see its details.")
-                )
+      itemList
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle(selectedFolderTitle)
+        .toolbarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .primaryAction) {
+            Menu("Add Item", systemImage: "plus") {
+              Button("Add Manually", systemImage: "square.and.pencil") {
+                showingNewItem = true
               }
             }
+            .menuIndicator(.hidden)
+            .labelStyle(.iconOnly)
+            .help("Add an item")
+          }
+          ToolbarItem(placement: .automatic) {
+            Button {
+              isDetailPresented.toggle()
+            } label: {
+              Image(systemName: "sidebar.trailing")
+            }
+            .help(isDetailPresented ? "Hide Details" : "Show Details")
+            .accessibilityLabel(isDetailPresented ? "Hide Details" : "Show Details")
+          }
+          DefaultToolbarItem(kind: .search, placement: .automatic)
+        }
+        .inspector(isPresented: $isDetailPresented) {
+          detailPanel
             .inspectorColumnWidth(
               min: inspectorMinimumWidth,
               ideal: inspectorIdealWidth,
               max: inspectorMaximumWidth
             )
-          }
+            .interactiveDismissDisabled()
         }
-      }
-      .navigationTitle(selectedFolderTitle)
-      .searchable(
-        text: Bindable(viewModel).searchText,
-        prompt: "Search items"
-      )
-      .toolbar {
-        ToolbarItem(placement: .primaryAction) {
-          Menu("Add Item", systemImage: "plus") {
-            Button("Add Manually", systemImage: "square.and.pencil") {
-              showingNewItem = true
-            }
-          }
-          .menuIndicator(.hidden)
-          .labelStyle(.iconOnly)
-          .help("Add an item")
-        }
-        ToolbarItem(placement: .automatic) {
-          Button {
-            isInspectorPresented.toggle()
-          } label: {
-            Image(systemName: "sidebar.trailing")
-          }
-          .help(isInspectorPresented ? "Hide Inspector" : "Show Inspector")
-          .accessibilityLabel(isInspectorPresented ? "Hide Inspector" : "Show Inspector")
-        }
-        DefaultToolbarItem(kind: .search, placement: .automatic)
-      }
     }
-    .frame(minWidth: 900, minHeight: 600)
+    .frame(minWidth: 980, minHeight: 600)
     .task { viewModel.load() }
+    .searchable(
+      text: Bindable(viewModel).searchText,
+      prompt: "Search items"
+    )
     .fileImporter(
       isPresented: $showingAttachmentImporter,
       allowedContentTypes: [.item],
@@ -238,6 +128,196 @@ struct LibraryView: View {
       }
     } message: {
       Text(actionError ?? viewModel.loadError ?? "Please try again.")
+    }
+  }
+
+  private var sidebar: some View {
+    List(selection: Bindable(viewModel).selectedFolder) {
+      Section("Library") {
+        sidebarRow(
+          title: "All Items",
+          systemImage: "books.vertical",
+          count: viewModel.items.filter { !$0.isTrashed }.count,
+          selection: .allItems
+        )
+        sidebarRow(
+          title: "Unfiled",
+          systemImage: "tray",
+          count: viewModel.unfiledCount,
+          selection: .unfiled
+        )
+        sidebarRow(
+          title: "Recycle Bin",
+          systemImage: "trash",
+          count: viewModel.trashCount,
+          selection: .trash
+        )
+      }
+      Section("Folders") {
+        ForEach(viewModel.folders) { folder in
+          sidebarRow(
+            title: folder.name,
+            systemImage: "folder",
+            count: folder.itemCount,
+            selection: .folder(folder.id)
+          )
+        }
+      }
+    }
+    .listStyle(.sidebar)
+  }
+
+  private func sidebarRow(
+    title: String,
+    systemImage: String,
+    count: Int,
+    selection: FolderSelection
+  ) -> some View {
+    HStack {
+      Label(title, systemImage: systemImage)
+      Spacer()
+      Text(count.formatted())
+        .foregroundStyle(.secondary)
+    }
+    .tag(selection)
+  }
+
+  @ViewBuilder
+  private var itemList: some View {
+    if viewModel.filteredItems.isEmpty {
+      emptyState
+    } else {
+      List(selection: $selectedItemID) {
+        ForEach(viewModel.filteredItems) { item in
+          ItemRow(item: item)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .tag(item.id)
+            .onTapGesture {
+              handleItemClick(item)
+            }
+            .contextMenu {
+              itemContextMenu(for: item)
+            }
+        }
+      }
+      .listStyle(.inset)
+    }
+  }
+
+  @ViewBuilder
+  private var emptyState: some View {
+    if viewModel.selectedFolder == .trash {
+      ContentUnavailableView(
+        "Recycle Bin Is Empty",
+        systemImage: "trash",
+        description: Text("Items you move to the recycle bin will appear here.")
+      )
+    } else if !viewModel.items.contains(where: { !$0.isTrashed }) {
+      ContentUnavailableView(
+        "Your Library Is Empty",
+        systemImage: "books.vertical",
+        description: Text("Add an item to start building your library.")
+      )
+    } else {
+      ContentUnavailableView(
+        "No Items",
+        systemImage: "doc.text.magnifyingglass",
+        description: Text("There are no items in this folder matching your search.")
+      )
+    }
+  }
+
+  @ViewBuilder
+  private var detailPanel: some View {
+    Group {
+      if let selectedItemID,
+         let item = viewModel.filteredItems.first(where: { $0.id == selectedItemID }) {
+        ItemDetailView(item: item)
+      } else {
+        ContentUnavailableView(
+          "Select an Item",
+          systemImage: "book",
+          description: Text("Choose an item to see its details.")
+        )
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+  }
+
+  @ViewBuilder
+  private func itemContextMenu(for item: LibraryItem) -> some View {
+    if item.isTrashed {
+      Button("Restore Item", systemImage: "arrow.uturn.backward") {
+        actionError = viewModel.restore(item)
+      }
+    } else {
+      Button("Edit", systemImage: "pencil") {
+        editingItem = item
+      }
+      Menu("Add File", systemImage: "paperclip") {
+        ForEach(AttachmentRole.allCases) { role in
+          Button("\(role.menuTitle)…") {
+            pendingAttachmentImport = AttachmentImportRequest(itemID: item.id, role: role)
+            showingAttachmentImporter = true
+          }
+        }
+      }
+      if !item.attachments.isEmpty {
+        Menu("Open File", systemImage: "doc") {
+          ForEach(item.attachments) { attachment in
+            Button("\(attachment.role.menuTitle) · \(attachment.fileName)") {
+              openAttachment(attachment, for: item)
+            }
+          }
+        }
+      }
+      if !viewModel.folders.isEmpty {
+        Menu("Add to Folder", systemImage: "folder") {
+          ForEach(viewModel.folders) { folder in
+            Button(folder.name) {
+              actionError = viewModel.addItem(item, to: folder)
+            }
+            .disabled(item.folderIDs.contains(folder.id))
+          }
+        }
+      }
+      Button("Move to Recycle Bin", systemImage: "trash") {
+        actionError = viewModel.moveToTrash(item)
+      }
+    }
+  }
+
+  private func openAttachment(_ attachment: LibraryAttachment, for item: LibraryItem) {
+    Task {
+      do {
+        let disposition = try await viewModel.openAttachment(attachment.id, for: item.id)
+        if disposition == .inAppPDF {
+          openWindow(
+            id: "pdf-reader",
+            value: PDFReaderRequest(itemID: item.id, attachmentID: attachment.id)
+          )
+        }
+      } catch {
+        actionError = error.localizedDescription
+      }
+    }
+  }
+
+  private func handleItemClick(_ item: LibraryItem) {
+    selectedItemID = item.id
+    let now = ProcessInfo.processInfo.systemUptime
+    if let lastItemClick,
+       lastItemClick.id == item.id,
+       now - lastItemClick.time <= NSEvent.doubleClickInterval {
+      self.lastItemClick = nil
+      guard let mainAttachment = item.attachments.first(where: { $0.role == .main }) else {
+        actionError = "This item has no main file."
+        return
+      }
+      openAttachment(mainAttachment, for: item)
+    } else {
+      lastItemClick = (item.id, now)
     }
   }
 

@@ -5,48 +5,73 @@ struct ItemDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text(item.title)
-                    .font(.largeTitle.weight(.semibold))
+                    .font(.title2.weight(.semibold))
                     .textSelection(.enabled)
 
                 if !item.authorNames.isEmpty {
                     Text(item.authorNames.joined(separator: ", "))
-                        .font(.title3)
+                        .font(.body)
                         .foregroundStyle(.secondary)
-                }
-
-                if let publicationTitle = item.publicationTitle {
-                    LabeledContent("Publication", value: publicationTitle)
-                }
-                if let literatureType = item.literatureType {
-                    LabeledContent("Type", value: literatureType)
-                }
-                if let date = publicationDate {
-                    LabeledContent("Publication date", value: date)
-                }
-                if let doi = item.doi {
-                    LabeledContent("DOI", value: doi)
                         .textSelection(.enabled)
                 }
-                if let pages = item.pageRange {
-                    LabeledContent("Pages", value: pages)
-                }
+
+                metadata
+
                 if let abstract = item.abstract {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Abstract")
                             .font(.headline)
                         Text(abstract)
+                            .font(.body)
                             .textSelection(.enabled)
                     }
                 }
+
+                LiteratureNotesView(itemID: item.id)
+
                 if let urlString = item.urlString, let url = URL(string: urlString) {
                     Link(urlString, destination: url)
+                        .lineLimit(2)
                 }
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .padding(32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
+    }
+
+    @ViewBuilder
+    private var metadata: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let publicationTitle = item.publicationTitle {
+                detailRow("Publication", publicationTitle)
+            }
+            if let literatureType = item.literatureType {
+                detailRow("Type", literatureType)
+            }
+            if let date = publicationDate {
+                detailRow("Publication date", date)
+            }
+            if let doi = item.doi {
+                detailRow("DOI", doi)
+            }
+            if let pages = item.pageRange {
+                detailRow("Pages", pages)
+            }
+        }
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.body)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var publicationDate: String? {

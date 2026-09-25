@@ -16,6 +16,7 @@ struct RefolioApp: App {
                 Author.self,
                 Authorship.self,
                 Attachment.self,
+                LiteratureNoteRecord.self,
                 Folder.self,
                 FolderMembership.self
             )
@@ -44,5 +45,14 @@ struct RefolioApp: App {
                 .environment(libraryViewModel)
         }
         .modelContainer(modelContainer)
+
+        WindowGroup("PDF Reader", id: "pdf-reader", for: PDFReaderRequest.self) { $request in
+            if let request {
+                PDFReaderView(request: request)
+                    .environment(libraryViewModel)
+            } else {
+                ContentUnavailableView("Select a PDF", systemImage: "doc.richtext")
+            }
+        }
     }
 }

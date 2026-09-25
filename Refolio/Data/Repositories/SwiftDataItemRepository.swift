@@ -155,13 +155,96 @@ final class SwiftDataItemRepository: ItemRepository {
         }
     }
 
-    func attachmentPath(_ attachmentID: UUID, in itemID: UUID) throws -> String {
+    func attachmentFile(_ attachmentID: UUID, in itemID: UUID) throws -> AttachmentFileReference {
         let item = try resolveItem(id: itemID)
         guard let attachment = item.attachments.first(where: { $0.id == attachmentID }),
               let path = attachment.managedRelativePath else {
             throw LibraryRepositoryError.attachmentNotFound
         }
-        return path
+        return AttachmentFileReference(
+            fileName: attachment.fileName,
+            contentTypeIdentifier: attachment.contentTypeIdentifier,
+            managedRelativePath: path,
+            lastReadPosition: attachment.lastReadPageIndex.map {
+                PDFReadingPosition(
+                    pageIndex: $0,
+                    pointX: attachment.lastReadPointX,
+                    pointY: attachment.lastReadPointY,
+                    zoom: attachment.lastReadZoom
+                )
+            }
+        )
+    }
+
+    func saveReadingPosition(_ position: PDFReadingPosition, for attachmentID: UUID, in itemID: UUID) throws {
+        let item = try resolveItem(id: itemID)
+        guard let attachment = item.attachments.first(where: { $0.id == attachmentID }) else {
+            throw LibraryRepositoryError.attachmentNotFound
+        }
+        guard attachment.lastReadPageIndex != position.pageIndex
+                || attachment.lastReadPointX != position.pointX
+                || attachment.lastReadPointY != position.pointY
+                || attachment.lastReadZoom != position.zoom else { return }
+        attachment.lastReadPageIndex = position.pageIndex
+        attachment.lastReadPointX = position.pointX
+        attachment.lastReadPointY = position.pointY
+        attachment.lastReadZoom = position.zoom
+        try modelContext.save()
+    }
+
+    func fetchNotes(for itemID: UUID) throws -> [LiteratureNote] {
+        try resolveItem(id: itemID).notes
+            .map { Self.libraryNote(from: $0, itemID: itemID) }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func createNote(_ draft: LiteratureNoteDraft, for itemID: UUID) throws -> LiteratureNote {
+        let item = try resolveItem(id: itemID)
+        let attachment: Attachment?
+        if let attachmentID = draft.sourceAttachmentID {
+            guard let source = item.attachments.first(where: { $0.id == attachmentID }) else {
+                throw LibraryRepositoryError.attachmentNotFound
+            }
+            attachment = source
+        } else {
+            attachment = nil
+        }
+
+        let note = LiteratureNoteRecord(
+            content: draft.content,
+            sourcePageIndex: draft.sourcePageIndex,
+            item: item,
+            sourceAttachment: attachment
+        )
+        modelContext.insert(note)
+        do {
+            try modelContext.save()
+        } catch {
+            item.notes.removeAll { $0.id == note.id }
+            modelContext.delete(note)
+            throw error
+        }
+        return Self.libraryNote(from: note, itemID: itemID)
+    }
+
+    func updateNote(_ noteID: UUID, content: String, in itemID: UUID) throws -> LiteratureNote {
+        let item = try resolveItem(id: itemID)
+        guard let note = item.notes.first(where: { $0.id == noteID }) else {
+            throw LibraryRepositoryError.noteNotFound
+        }
+        note.content = content
+        note.updatedAt = .now
+        try modelContext.save()
+        return Self.libraryNote(from: note, itemID: itemID)
+    }
+
+    func deleteNote(_ noteID: UUID, in itemID: UUID) throws {
+        let item = try resolveItem(id: itemID)
+        guard let note = item.notes.first(where: { $0.id == noteID }) else {
+            throw LibraryRepositoryError.noteNotFound
+        }
+        modelContext.delete(note)
+        try modelContext.save()
     }
 
     private func resolvePublication(for draft: ItemDraft) throws -> Publication? {
@@ -240,18 +323,32 @@ final class SwiftDataItemRepository: ItemRepository {
             }.sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
         )
     }
+
+    private static func libraryNote(from note: LiteratureNoteRecord, itemID: UUID) -> LiteratureNote {
+        LiteratureNote(
+            id: note.id,
+            itemID: itemID,
+            content: note.content,
+            createdAt: note.createdAt,
+            updatedAt: note.updatedAt,
+            sourceAttachmentName: note.sourceAttachment?.fileName,
+            sourcePageIndex: note.sourcePageIndex
+        )
+    }
 }
 
 private enum LibraryRepositoryError: LocalizedError {
     case folderNotFound
     case itemNotFound
     case attachmentNotFound
+    case noteNotFound
 
     var errorDescription: String? {
         switch self {
         case .folderNotFound: "The selected folder no longer exists."
         case .itemNotFound: "The selected item no longer exists."
         case .attachmentNotFound: "The attachment could not be found."
+        case .noteNotFound: "The note could not be found."
         }
     }
 }

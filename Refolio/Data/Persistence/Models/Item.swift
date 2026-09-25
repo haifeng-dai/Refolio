@@ -26,6 +26,9 @@ final class Item {
     @Relationship(deleteRule: .cascade, inverse: \Attachment.item)
     var attachments: [Attachment] = []
 
+    @Relationship(deleteRule: .cascade, inverse: \LiteratureNoteRecord.item)
+    var notes: [LiteratureNoteRecord] = []
+
     @Relationship(deleteRule: .cascade, inverse: \FolderMembership.item)
     var folderMemberships: [FolderMembership] = []
 

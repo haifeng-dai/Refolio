@@ -61,6 +61,31 @@ struct AttachmentRecord {
     let managedRelativePath: String
 }
 
+struct AttachmentFileReference {
+    let fileName: String
+    let contentTypeIdentifier: String?
+    let managedRelativePath: String
+    let lastReadPosition: PDFReadingPosition?
+}
+
+struct AttachmentDocument {
+    let fileName: String
+    let url: URL
+    let lastReadPosition: PDFReadingPosition?
+}
+
+struct PDFReadingPosition: Equatable {
+    let pageIndex: Int
+    let pointX: Double?
+    let pointY: Double?
+    let zoom: Double?
+}
+
+enum AttachmentOpenDisposition {
+    case inAppPDF
+    case external
+}
+
 struct LibraryFolder: Identifiable, Equatable {
     let id: UUID
     let name: String

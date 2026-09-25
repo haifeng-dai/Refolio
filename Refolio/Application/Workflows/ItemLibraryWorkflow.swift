@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 struct ItemLibraryWorkflow {
@@ -94,9 +95,71 @@ struct ItemLibraryWorkflow {
         }
     }
 
-    func openAttachment(_ attachmentID: UUID, for itemID: UUID) async throws {
-        let path = try repository.attachmentPath(attachmentID, in: itemID)
-        try await attachmentFileStore.open(relativePath: path)
+    func openAttachment(_ attachmentID: UUID, for itemID: UUID) async throws -> AttachmentOpenDisposition {
+        let attachment = try repository.attachmentFile(attachmentID, in: itemID)
+        if isPDF(attachment) {
+            return .inAppPDF
+        }
+        try await attachmentFileStore.open(relativePath: attachment.managedRelativePath)
+        return .external
+    }
+
+    func pdfDocument(_ attachmentID: UUID, for itemID: UUID) async throws -> AttachmentDocument {
+        let attachment = try repository.attachmentFile(attachmentID, in: itemID)
+        guard isPDF(attachment) else { throw AttachmentReaderError.notPDF }
+        return AttachmentDocument(
+            fileName: attachment.fileName,
+            url: try await attachmentFileStore.url(for: attachment.managedRelativePath),
+            lastReadPosition: attachment.lastReadPosition
+        )
+    }
+
+    func saveReadingPosition(_ position: PDFReadingPosition, for attachmentID: UUID, in itemID: UUID) throws {
+        let validZoom = position.zoom.map { $0.isFinite && $0 > 0 } ?? true
+        guard position.pageIndex >= 0,
+              (position.pointX == nil && position.pointY == nil)
+                || (position.pointX?.isFinite == true && position.pointY?.isFinite == true),
+              validZoom else {
+            throw AttachmentReaderError.invalidReadingPosition
+        }
+        try repository.saveReadingPosition(position, for: attachmentID, in: itemID)
+    }
+
+    func fetchNotes(for itemID: UUID) throws -> [LiteratureNote] {
+        try repository.fetchNotes(for: itemID)
+    }
+
+    func createNote(_ draft: LiteratureNoteDraft, for itemID: UUID) throws -> LiteratureNote {
+        let content = draft.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { throw LiteratureNoteError.empty }
+        guard draft.sourcePageIndex.map({ $0 >= 0 }) ?? true,
+              draft.sourcePageIndex == nil || draft.sourceAttachmentID != nil else {
+            throw LiteratureNoteError.invalidSource
+        }
+        return try repository.createNote(
+            LiteratureNoteDraft(
+                content: content,
+                sourceAttachmentID: draft.sourceAttachmentID,
+                sourcePageIndex: draft.sourcePageIndex
+            ),
+            for: itemID
+        )
+    }
+
+    func updateNote(_ noteID: UUID, content: String, in itemID: UUID) throws -> LiteratureNote {
+        let content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { throw LiteratureNoteError.empty }
+        return try repository.updateNote(noteID, content: content, in: itemID)
+    }
+
+    func deleteNote(_ noteID: UUID, in itemID: UUID) throws {
+        try repository.deleteNote(noteID, in: itemID)
+    }
+
+    private func isPDF(_ attachment: AttachmentFileReference) -> Bool {
+        let type = attachment.contentTypeIdentifier.flatMap { UTType($0) }
+            ?? UTType(filenameExtension: URL(fileURLWithPath: attachment.fileName).pathExtension)
+        return type?.conforms(to: .pdf) == true
     }
 
     private func validateDate(year: Int?, month: Int?, day: Int?) throws {
@@ -148,6 +211,30 @@ private enum ItemDraftError: LocalizedError {
             "The publication month must be between 1 and 12."
         case .invalidDay:
             "The publication date is not valid."
+        }
+    }
+}
+
+private enum AttachmentReaderError: LocalizedError {
+    case notPDF
+    case invalidReadingPosition
+
+    var errorDescription: String? {
+        switch self {
+        case .notPDF: "This attachment is not a PDF."
+        case .invalidReadingPosition: "The PDF reading position is invalid."
+        }
+    }
+}
+
+private enum LiteratureNoteError: LocalizedError {
+    case empty
+    case invalidSource
+
+    var errorDescription: String? {
+        switch self {
+        case .empty: "A note cannot be empty."
+        case .invalidSource: "The note source is invalid."
         }
     }
 }
