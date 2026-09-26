@@ -99,14 +99,62 @@ public final class TranslationViewModel {
     public var isShowingFloatingPopover: Bool = false
     public var popoverAnchorRect: CGRect = .zero
 
-    // 历史记录
-    public var history: [TranslationRecord] = []
+    // 引擎支持
+    public var availableEngines: [any TranslationEngine] = []
+    public var selectedEngineID: String = "bing" {
+        didSet {
+            UserDefaults.standard.set(selectedEngineID, forKey: "refolio_selected_translation_engine_id")
+            retranslate()
+        }
+    }
 
-    private let engine: any TranslationEngine
+    // 内存翻译缓存（Key: "\(engineID):\(targetLanguage):\(normalizedText)" -> Value: 译文），避免重复请求 API
+    private var translationCache: [String: String] = [:]
+
     private var debounceTask: Task<Void, Never>?
 
-    public init(engine: any TranslationEngine = TranslationEngineRegistry.builtIn.defaultEngine) {
-        self.engine = engine
+    public var currentEngine: any TranslationEngine {
+        availableEngines.first(where: { $0.id == selectedEngineID }) ?? availableEngines.first ?? BingTranslationEngine()
+    }
+
+    public init() {
+        let savedEngineID = UserDefaults.standard.string(forKey: "refolio_selected_translation_engine_id") ?? "bing"
+        self.selectedEngineID = savedEngineID
+        self.reloadEngines()
+    }
+
+    /// 重新加载可用引擎（从 Keychain 读取 key 等）
+    public func reloadEngines() {
+        let niuKey = KeychainHelper.load(key: "niutrans_api_key")
+        let baiduCredentials = KeychainHelper.load(key: "baidu_api_key")
+        let youdaoCredentials = KeychainHelper.load(key: "youdaozhiyun_api_key")
+        let registry = TranslationEngineRegistry.configured(
+            niuTransAPIKey: niuKey,
+            baiduCredentials: baiduCredentials,
+            youdaoCredentials: youdaoCredentials
+        )
+        self.availableEngines = registry.engines
+
+        if !availableEngines.contains(where: { $0.id == selectedEngineID }) {
+            selectedEngineID = availableEngines.first?.id ?? "bing"
+        }
+    }
+
+    /// 保存引擎 API Key 并刷新引擎实例
+    public func saveAPIKey(_ key: String, forEngineID engineID: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            KeychainHelper.delete(key: "\(engineID)_api_key")
+        } else {
+            KeychainHelper.save(key: "\(engineID)_api_key", value: trimmed)
+        }
+        reloadEngines()
+        retranslate()
+    }
+
+    /// 读取引擎 API Key
+    public func getAPIKey(forEngineID engineID: String) -> String {
+        return KeychainHelper.load(key: "\(engineID)_api_key") ?? ""
     }
 
     /// 当 PDF 中的划选文字发生变化时调用
@@ -121,6 +169,15 @@ public final class TranslationViewModel {
 
         // 如果用户选中文本变了，才更新并触发翻译
         let textChanged = (cleaned != originalText)
+        if textChanged {
+            // 只清空当前界面的译文，不触碰 translationCache。
+            // 新请求命中缓存时，requestTranslation 会立即把缓存结果重新显示出来。
+            debounceTask?.cancel()
+            debounceTask = nil
+            translatedText = ""
+            errorMessage = nil
+            isLoading = isAutoTranslateEnabled
+        }
         originalText = cleaned
 
         if let rect = anchorRect, isFloatingPopoverEnabled {
@@ -135,10 +192,27 @@ public final class TranslationViewModel {
         }
     }
 
-    /// 发起翻译请求
-    public func requestTranslation(text: String? = nil) {
+    /// 缓存 Key 生成
+    private func cacheKey(for text: String, engineID: String, targetLanguage: String) -> String {
+        return "\(engineID)::\(targetLanguage)::\(text)"
+    }
+
+    /// 发起翻译请求（优先命中缓存，不发起重复请求）
+    public func requestTranslation(text: String? = nil, force: Bool = false) {
         let textToTranslate = text ?? originalText
         guard !textToTranslate.isEmpty else { return }
+
+        let engine = currentEngine
+        let key = cacheKey(for: textToTranslate, engineID: engine.id, targetLanguage: targetLanguage)
+
+        // 1. 如果命中内存缓存且不强制刷新，直接返回缓存结果，不发 API
+        if !force, let cachedResult = translationCache[key] {
+            debounceTask?.cancel()
+            self.translatedText = cachedResult
+            self.isLoading = false
+            self.errorMessage = nil
+            return
+        }
 
         debounceTask?.cancel()
         debounceTask = Task { [weak self] in
@@ -150,7 +224,7 @@ public final class TranslationViewModel {
             self.errorMessage = nil
 
             do {
-                let result = try await self.engine.translate(
+                let result = try await engine.translate(
                     TranslationRequest(
                         text: textToTranslate,
                         sourceLanguage: nil,
@@ -161,19 +235,8 @@ public final class TranslationViewModel {
                 self.translatedText = result.text
                 self.isLoading = false
 
-                // 记录到历史
-                if !self.history.contains(where: { $0.original == textToTranslate && $0.targetLanguage == self.targetLanguage }) {
-                    let record = TranslationRecord(
-                        original: textToTranslate,
-                        translated: result.text,
-                        targetLanguage: self.targetLanguage,
-                        timestamp: Date()
-                    )
-                    self.history.insert(record, at: 0)
-                    if self.history.count > 40 {
-                        self.history.removeLast()
-                    }
-                }
+                // 写入缓存
+                self.translationCache[key] = result.text
             } catch {
                 guard !Task.isCancelled else { return }
                 self.errorMessage = error.localizedDescription
@@ -182,9 +245,9 @@ public final class TranslationViewModel {
         }
     }
 
-    /// 重新翻译当前文本（如切换语言后）
+    /// 重新翻译当前文本（强制刷新，跳过缓存）
     public func retranslate() {
-        requestTranslation(text: originalText)
+        requestTranslation(text: originalText, force: true)
     }
 
     /// 复制翻译结果到剪贴板
@@ -217,8 +280,8 @@ public final class TranslationViewModel {
         dismissFloatingPopover()
     }
 
-    /// 清空所有历史记录
-    public func clearHistory() {
-        history.removeAll()
+    /// 清空翻译缓存
+    public func clearCache() {
+        translationCache.removeAll()
     }
 }

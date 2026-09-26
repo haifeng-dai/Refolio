@@ -7,6 +7,9 @@ struct TranslationWorkstationView: View {
     @Bindable var viewModel: TranslationViewModel
     let onOpenDetailColumn: (() -> Void)?
 
+    @State private var isShowingSettingsSheet: Bool = false
+    @State private var isOriginalExpanded: Bool = true
+
     init(viewModel: TranslationViewModel, onOpenDetailColumn: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.onOpenDetailColumn = onOpenDetailColumn
@@ -16,7 +19,7 @@ struct TranslationWorkstationView: View {
         VStack(spacing: 14) {
             headerBar
 
-            if viewModel.originalText.isEmpty && viewModel.history.isEmpty {
+            if viewModel.originalText.isEmpty {
                 emptyPlaceholder
             } else {
                 contentSections
@@ -25,12 +28,16 @@ struct TranslationWorkstationView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .top)
+        .sheet(isPresented: $isShowingSettingsSheet) {
+            TranslationSettingsSheet(viewModel: viewModel)
+        }
     }
 
     // MARK: - Header Bar
 
     private var headerBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
+            // 目标语言选择
             Menu {
                 ForEach(TranslationLanguage.supported) { lang in
                     Button {
@@ -54,7 +61,42 @@ struct TranslationWorkstationView: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            // 翻译引擎选择
+            Menu {
+                ForEach(viewModel.availableEngines, id: \.id) { engine in
+                    Button {
+                        viewModel.selectedEngineID = engine.id
+                    } label: {
+                        HStack {
+                            Text(engine.displayName)
+                            if viewModel.selectedEngineID == engine.id {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 10))
+                    Text(viewModel.currentEngine.displayName)
+                        .font(.system(size: 12, weight: .medium))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .padding(.horizontal, 7)
                 .padding(.vertical, 4)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -72,10 +114,17 @@ struct TranslationWorkstationView: View {
                 Toggle("划词自动翻译", isOn: $viewModel.isAutoTranslateEnabled)
                 Toggle("显示悬浮气泡", isOn: $viewModel.isFloatingPopoverEnabled)
                 Divider()
-                Button("清空历史记录", role: .destructive) {
-                    viewModel.clearHistory()
+                if viewModel.currentEngine.requiresAPIKey {
+                    Button {
+                        isShowingSettingsSheet = true
+                    } label: {
+                        Label("配置 \(viewModel.currentEngine.displayName) API Key…", systemImage: "key.fill")
+                    }
+                    Divider()
                 }
-                .disabled(viewModel.history.isEmpty)
+                Button("清空翻译缓存") {
+                    viewModel.clearCache()
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 14))
@@ -118,14 +167,8 @@ struct TranslationWorkstationView: View {
 
     private var contentSections: some View {
         VStack(spacing: 14) {
-            if !viewModel.originalText.isEmpty {
-                originalCard
-                translatedCard
-            }
-
-            if !viewModel.history.isEmpty {
-                historySection
-            }
+            originalCard
+            translatedCard
         }
     }
 
@@ -134,12 +177,21 @@ struct TranslationWorkstationView: View {
     private var originalCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("原文")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("\(viewModel.originalText.count) 字符")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                HStack(spacing: 6) {
+                    Text("原文")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("\(viewModel.originalText.count) 字符")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isOriginalExpanded.toggle()
+                    }
+                }
+                .help(isOriginalExpanded ? "点击收起原文" : "点击展开原文")
 
                 Spacer()
 
@@ -160,14 +212,28 @@ struct TranslationWorkstationView: View {
                 }
                 .buttonStyle(.plain)
                 .help("清除当前内容")
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isOriginalExpanded.toggle()
+                    }
+                } label: {
+                    Image(systemName: isOriginalExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(isOriginalExpanded ? "收起原文" : "展开原文")
             }
 
-            Text(viewModel.originalText)
-                .font(.system(size: 13, weight: .regular, design: .serif))
-                .lineSpacing(3)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if isOriginalExpanded {
+                Text(viewModel.originalText)
+                    .font(.system(size: 13, weight: .regular, design: .serif))
+                    .lineSpacing(3)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -222,11 +288,22 @@ struct TranslationWorkstationView: View {
                     Text("翻译失败: \(error)")
                         .font(.caption)
                         .foregroundStyle(.red)
-                    Button("重试") {
-                        viewModel.retranslate()
+
+                    HStack(spacing: 8) {
+                        Button("重试") {
+                            viewModel.retranslate()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        if error.contains("API Key") {
+                            Button("配置 API Key") {
+                                isShowingSettingsSheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
             } else if viewModel.isLoading && viewModel.translatedText.isEmpty {
                 HStack(spacing: 8) {
@@ -254,52 +331,6 @@ struct TranslationWorkstationView: View {
                 .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
         )
     }
-
-    // MARK: - History Section
-
-    private var historySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("划词历史")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(viewModel.history.count) 条")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.top, 4)
-
-            VStack(spacing: 6) {
-                ForEach(viewModel.history) { item in
-                    Button {
-                        viewModel.originalText = item.original
-                        viewModel.translatedText = item.translated
-                        viewModel.targetLanguage = item.targetLanguage
-                    } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.original)
-                                .font(.caption.weight(.medium))
-                                .lineLimit(1)
-                                .foregroundStyle(.primary)
-
-                            Text(item.translated)
-                                .font(.caption2)
-                                .lineLimit(2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 8)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Floating Popover (Overlay directly near selection)
@@ -308,6 +339,7 @@ struct TranslationFloatingPopover: View {
     @Bindable var viewModel: TranslationViewModel
     let onOpenDetailPanel: () -> Void
     var onClose: (() -> Void)? = nil
+    var onContentSizeChange: (() -> Void)? = nil
 
     @State private var isCopied: Bool = false
 
@@ -363,12 +395,6 @@ struct TranslationFloatingPopover: View {
 
             Divider()
 
-            // 原文简览
-            Text(viewModel.originalText)
-                .font(.system(size: 11.5, weight: .regular, design: .serif))
-                .lineLimit(2)
-                .foregroundStyle(.secondary)
-
             // 译文内容
             if viewModel.isLoading && viewModel.translatedText.isEmpty {
                 HStack(spacing: 6) {
@@ -390,7 +416,6 @@ struct TranslationFloatingPopover: View {
                     .lineSpacing(2)
                     .foregroundStyle(.primary)
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(10)
@@ -404,5 +429,99 @@ struct TranslationFloatingPopover: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.primary.opacity(0.1), lineWidth: 1)
         )
+        .onChange(of: viewModel.translatedText) {
+            onContentSizeChange?()
+        }
+        .onChange(of: viewModel.isLoading) {
+            onContentSizeChange?()
+        }
+        .onChange(of: viewModel.errorMessage) {
+            onContentSizeChange?()
+        }
+    }
+}
+
+// MARK: - Translation Settings Sheet (Minimalist Single Engine API Key Config)
+
+struct TranslationSettingsSheet: View {
+    @Bindable var viewModel: TranslationViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var apiKey: String = ""
+
+    private var engine: any TranslationEngine {
+        viewModel.currentEngine
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // 顶栏标题
+            HStack {
+                Text("\(engine.displayName) 配置")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("API Key:")
+                    .font(.subheadline.weight(.medium))
+
+                SecureField("输入 \(engine.displayName) API Key", text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+
+                Text("密钥将安全保存在本地系统的 Keychain（钥匙串）中。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if let credentialFormat {
+                    Text("格式：\(credentialFormat)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // 底部操作按钮
+            HStack {
+                Spacer()
+
+                Button("取消") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("保存") {
+                    viewModel.saveAPIKey(apiKey, forEngineID: engine.id)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear {
+            apiKey = viewModel.getAPIKey(forEngineID: engine.id)
+        }
+    }
+
+    private var credentialFormat: String? {
+        switch engine.id {
+        case "baidu":
+            return "AppID#Key"
+        case "youdaozhiyun":
+            return "AppID#AppKey#VocabID（可选）"
+        case "niutrans":
+            return "API Key"
+        default:
+            return nil
+        }
     }
 }

@@ -31,8 +31,13 @@ public struct TranslationResult: Sendable, Equatable {
 public protocol TranslationEngine: Sendable {
     var id: String { get }
     var displayName: String { get }
+    var requiresAPIKey: Bool { get }
 
     func translate(_ request: TranslationRequest) async throws -> TranslationResult
+}
+
+extension TranslationEngine {
+    public var requiresAPIKey: Bool { false }
 }
 
 /// 应用层的引擎目录。以后新增引擎时，只需把新的实现加入目录即可。
@@ -63,8 +68,22 @@ public struct TranslationEngineRegistry: Sendable {
     }
 
     /// 当前已内置的引擎。后续引擎会在这里集中注册，不改变公共协议。
-    public static let builtIn = TranslationEngineRegistry(
-        engines: [BingTranslationEngine()],
-        defaultEngineID: "bing"
-    )
+    public static let builtIn = configured()
+
+    /// 创建包含所有支持引擎的目录
+    public static func configured(
+        niuTransAPIKey: String? = nil,
+        baiduCredentials: String? = nil,
+        youdaoCredentials: String? = nil
+    ) -> TranslationEngineRegistry {
+        let engines: [any TranslationEngine] = [
+            BingTranslationEngine(),
+            CNKITranslationEngine(),
+            GoogleTranslationEngine(),
+            BaiduTranslationEngine(credentials: baiduCredentials ?? ""),
+            YoudaoZhiyunTranslationEngine(credentials: youdaoCredentials ?? ""),
+            NiuTransTranslationEngine(apiKey: niuTransAPIKey ?? "")
+        ]
+        return TranslationEngineRegistry(engines: engines, defaultEngineID: "bing")
+    }
 }
