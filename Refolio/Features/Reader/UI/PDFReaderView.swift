@@ -12,6 +12,7 @@ struct PDFReaderView: View {
     let request: PDFReaderRequest
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var selectedTool: ReaderTool = .notes
+    @State private var translationViewModel = TranslationViewModel()
     @State private var document: PDFDocument?
     @State private var fileName = "PDF Reader"
     @State private var loadError: String?
@@ -44,6 +45,11 @@ struct PDFReaderView: View {
                     PDFKitView(
                         document: document,
                         initialPosition: initialPosition,
+                        translationViewModel: translationViewModel,
+                        onOpenDetailPanel: {
+                            isToolsPresented = true
+                            selectedTool = .translation
+                        },
                         onPositionChanged: { position in
                             positionSaveError = viewModel.saveReadingPosition(
                                 position,
@@ -83,7 +89,8 @@ struct PDFReaderView: View {
                     selectedTool: $selectedTool,
                     itemID: request.itemID,
                     attachmentID: request.attachmentID,
-                    pageIndex: currentPageIndex
+                    pageIndex: currentPageIndex,
+                    translationViewModel: translationViewModel
                 )
                 .inspectorColumnWidth(min: 300, ideal: 320, max: 480)
                 .interactiveDismissDisabled()
@@ -158,18 +165,19 @@ private struct ReaderToolsView: View {
     let itemID: UUID
     let attachmentID: UUID
     let pageIndex: Int
+    @Bindable var translationViewModel: TranslationViewModel
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Reader Tools", selection: $selectedTool) {
-                ForEach(ReaderTool.allCases) { tool in
-                    Text(tool.title)
-                        .tag(tool)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding()
+            RefolioSegmentedControl(
+                items: ReaderTool.allCases,
+                selection: $selectedTool,
+                title: { $0.title },
+                icon: { $0.systemImage },
+                helpText: { $0.title }
+            )
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
 
             Divider()
 
@@ -182,6 +190,8 @@ private struct ReaderToolsView: View {
                             sourcePageIndex: pageIndex
                         )
                         .padding()
+                    } else if selectedTool == .translation {
+                        TranslationWorkstationView(viewModel: translationViewModel)
                     } else {
                         ContentUnavailableView(
                             selectedTool.title,
@@ -219,6 +229,8 @@ private struct PDFThumbnailPane: NSViewRepresentable {
 private struct PDFKitView: NSViewRepresentable {
     let document: PDFDocument
     let initialPosition: PDFReadingPosition?
+    let translationViewModel: TranslationViewModel
+    let onOpenDetailPanel: () -> Void
     let onPositionChanged: (PDFReadingPosition) -> Void
     let onCurrentPageChanged: (Int) -> Void
     let onViewReady: (ReadingPDFView?) -> Void
@@ -231,6 +243,8 @@ private struct PDFKitView: NSViewRepresentable {
         view.document = document
         context.coordinator.observe(view)
         context.coordinator.onCurrentPageChanged = onCurrentPageChanged
+        context.coordinator.translationViewModel = translationViewModel
+        context.coordinator.onOpenDetailPanel = onOpenDetailPanel
         DispatchQueue.main.async { [weak view, coordinator = context.coordinator] in
             guard let view else { return }
             coordinator.onViewReady(view)
@@ -242,6 +256,8 @@ private struct PDFKitView: NSViewRepresentable {
     func updateNSView(_ view: ReadingPDFView, context: Context) {
         context.coordinator.onPositionChanged = onPositionChanged
         context.coordinator.onCurrentPageChanged = onCurrentPageChanged
+        context.coordinator.translationViewModel = translationViewModel
+        context.coordinator.onOpenDetailPanel = onOpenDetailPanel
         if view.document !== document {
             view.document = document
             restorePosition(in: view)
@@ -250,11 +266,14 @@ private struct PDFKitView: NSViewRepresentable {
 
     static func dismantleNSView(_ view: ReadingPDFView, coordinator: Coordinator) {
         coordinator.flushPosition()
+        coordinator.closePopover()
         coordinator.onViewReady(nil)
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            translationViewModel: translationViewModel,
+            onOpenDetailPanel: onOpenDetailPanel,
             onPositionChanged: onPositionChanged,
             onCurrentPageChanged: onCurrentPageChanged,
             onViewReady: onViewReady
@@ -281,19 +300,26 @@ private struct PDFKitView: NSViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, NSPopoverDelegate {
+        var translationViewModel: TranslationViewModel
+        var onOpenDetailPanel: () -> Void
         var onPositionChanged: (PDFReadingPosition) -> Void
         var onCurrentPageChanged: (Int) -> Void
         var onViewReady: (ReadingPDFView?) -> Void
         private weak var pdfView: PDFView?
         private var observedClipViews = Set<ObjectIdentifier>()
         private var pendingSave: DispatchWorkItem?
+        private var popover: NSPopover?
 
         init(
+            translationViewModel: TranslationViewModel,
+            onOpenDetailPanel: @escaping () -> Void,
             onPositionChanged: @escaping (PDFReadingPosition) -> Void,
             onCurrentPageChanged: @escaping (Int) -> Void,
             onViewReady: @escaping (ReadingPDFView?) -> Void
         ) {
+            self.translationViewModel = translationViewModel
+            self.onOpenDetailPanel = onOpenDetailPanel
             self.onPositionChanged = onPositionChanged
             self.onCurrentPageChanged = onCurrentPageChanged
             self.onViewReady = onViewReady
@@ -313,6 +339,12 @@ private struct PDFKitView: NSViewRepresentable {
                 name: .PDFViewScaleChanged,
                 object: view
             )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(selectionChanged(_:)),
+                name: .PDFViewSelectionChanged,
+                object: view
+            )
             observeClipViews(in: view)
             DispatchQueue.main.async { [weak self, weak view] in
                 guard let self, let view else { return }
@@ -326,12 +358,82 @@ private struct PDFKitView: NSViewRepresentable {
             savePosition()
         }
 
+        func closePopover() {
+            popover?.close()
+            popover = nil
+        }
+
+        @objc private func selectionChanged(_ notification: Notification) {
+            guard let view = pdfView else { return }
+            guard let selection = view.currentSelection,
+                  let rawText = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  rawText.count > 1,
+                  let page = selection.pages.first else {
+                popover?.close()
+                return
+            }
+
+            let bounds = selection.bounds(for: page)
+            let viewRect = view.convert(bounds, from: page)
+            guard viewRect.width > 0, viewRect.height > 0 else { return }
+
+            translationViewModel.handleSelectionChange(rawText: rawText, anchorRect: viewRect)
+
+            if translationViewModel.isFloatingPopoverEnabled {
+                showPopover(for: viewRect, in: view)
+            }
+        }
+
+        private func showPopover(for rect: NSRect, in view: PDFView) {
+            if popover == nil {
+                let p = NSPopover()
+                p.behavior = .transient
+                p.animates = true
+                p.delegate = self
+                let content = TranslationFloatingPopover(
+                    viewModel: translationViewModel,
+                    onOpenDetailPanel: { [weak self, weak p] in
+                        p?.close()
+                        self?.onOpenDetailPanel()
+                    },
+                    onClose: { [weak p] in
+                        p?.close()
+                    }
+                )
+                p.contentViewController = NSHostingController(rootView: content)
+                self.popover = p
+            }
+
+            guard let popover = self.popover else { return }
+            if popover.isShown {
+                popover.positioningRect = rect
+            } else {
+                popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
+            }
+        }
+
+        func popoverDidClose(_ notification: Notification) {
+            translationViewModel.isShowingFloatingPopover = false
+        }
+
         @objc private func readingPositionChanged(_ notification: Notification) {
             scheduleSave()
         }
 
         @objc private func scrollBoundsChanged(_ notification: Notification) {
             scheduleSave()
+            if let popover = self.popover, popover.isShown,
+               let view = pdfView,
+               let selection = view.currentSelection,
+               let page = selection.pages.first {
+                let bounds = selection.bounds(for: page)
+                let viewRect = view.convert(bounds, from: page)
+                if view.bounds.intersects(viewRect) {
+                    popover.positioningRect = viewRect
+                } else {
+                    popover.close()
+                }
+            }
         }
 
         private func observeClipViews(in view: NSView) {
@@ -390,6 +492,7 @@ private struct PDFKitView: NSViewRepresentable {
 
         deinit {
             pendingSave?.cancel()
+            popover?.close()
             NotificationCenter.default.removeObserver(self)
         }
     }
