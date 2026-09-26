@@ -1,6 +1,13 @@
 import Foundation
 import Observation
 
+enum MainWorkspaceMode: String, CaseIterable, Identifiable {
+    case library
+    case reader
+
+    var id: Self { self }
+}
+
 @MainActor
 @Observable
 final class LibraryViewModel {
@@ -13,6 +20,31 @@ final class LibraryViewModel {
     var selectedFolder: FolderSelection? = .allItems
     var attachmentFilter: ItemAttachmentFilter = .all
     private(set) var loadError: String?
+
+    var workspaceMode: MainWorkspaceMode = .library
+    var activeReaderRequest: PDFReaderRequest? = nil
+    var selectedItemID: UUID?
+
+    var activeReaderTitle: String? {
+        guard let request = activeReaderRequest else { return nil }
+        return items.first(where: { $0.id == request.itemID })?.title
+    }
+
+    func openInReader(itemID: UUID, attachmentID: UUID) {
+        activeReaderRequest = PDFReaderRequest(itemID: itemID, attachmentID: attachmentID)
+        workspaceMode = .reader
+    }
+
+    func switchToReader() {
+        if activeReaderRequest == nil,
+           let selectedID = selectedItemID,
+           let selected = items.first(where: { $0.id == selectedID }),
+           let mainAttachment = selected.attachments.first(where: { $0.role == .main }) {
+            openInReader(itemID: selected.id, attachmentID: mainAttachment.id)
+        } else {
+            workspaceMode = .reader
+        }
+    }
 
     init(workflow: ItemLibraryWorkflow) {
         self.workflow = workflow

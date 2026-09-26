@@ -41,7 +41,7 @@ struct RefolioApp: App {
 
     var body: some Scene {
         WindowGroup {
-            LibraryView()
+            MainWorkspaceView()
                 .environment(libraryViewModel)
         }
         .modelContainer(modelContainer)

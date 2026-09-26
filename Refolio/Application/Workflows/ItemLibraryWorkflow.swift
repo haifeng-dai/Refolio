@@ -89,9 +89,11 @@ struct ItemLibraryWorkflow {
 
     func saveReadingPosition(_ position: PDFReadingPosition, for attachmentID: UUID, in itemID: UUID) throws {
         let validZoom = position.zoom.map { $0.isFinite && $0 > 0 } ?? true
+        let validPointX = position.pointX.map { $0.isFinite } ?? true
+        let validPointY = position.pointY.map { $0.isFinite } ?? true
         guard position.pageIndex >= 0,
-              (position.pointX == nil && position.pointY == nil)
-                || (position.pointX?.isFinite == true && position.pointY?.isFinite == true),
+              validPointX,
+              validPointY,
               validZoom else {
             throw AttachmentReaderError.invalidReadingPosition
         }

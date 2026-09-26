@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 extension Notification.Name {
   static let toggleDetailColumn = Notification.Name("RefolioToggleDetailColumn")
 }
-
 @Observable
 final class SplitViewState {
   static let shared = SplitViewState()
@@ -13,9 +12,9 @@ final class SplitViewState {
 }
 
 struct LibraryView: View {
-  private let sidebarMinimumWidth: CGFloat = 200
-  private let sidebarIdealWidth: CGFloat = 220
-  private let sidebarMaximumWidth: CGFloat = 280
+  private let sidebarMinimumWidth: CGFloat = 260
+  private let sidebarIdealWidth: CGFloat = 280
+  private let sidebarMaximumWidth: CGFloat = 400
 
   private let contentMinimumWidth: CGFloat = 280
   private let contentIdealWidth: CGFloat = 360
@@ -34,10 +33,18 @@ struct LibraryView: View {
   @State private var showingNewFolder = false
   @State private var showingAttachmentImporter = false
   @State private var pendingAttachmentImport: AttachmentImportRequest?
-  @State private var selectedItemID: UUID?
   @State private var lastItemClick: (id: UUID, time: TimeInterval)?
   @State private var editingItem: LibraryItem?
   @State private var actionError: String?
+
+  private var selectedItemID: UUID? {
+    get { viewModel.selectedItemID }
+    nonmutating set { viewModel.selectedItemID = newValue }
+  }
+
+  private var selectedItemIDBinding: Binding<UUID?> {
+    Bindable(viewModel).selectedItemID
+  }
 
   private var selectedItem: LibraryItem? {
     guard let selectedItemID else { return nil }
@@ -59,6 +66,14 @@ struct LibraryView: View {
             }
             .labelStyle(.iconOnly)
             .help("Create a folder")
+          }
+
+          ToolbarItem(placement: .automatic) {
+            Button("PDF Reader", systemImage: "book.pages") {
+              viewModel.switchToReader()
+            }
+            .labelStyle(.iconOnly)
+            .help(viewModel.activeReaderTitle.map { "Switch to PDF Reader: \($0)" } ?? "Switch to PDF Reader")
           }
         }
     } content: {
@@ -283,7 +298,7 @@ struct LibraryView: View {
     if viewModel.filteredItems.isEmpty {
       emptyState
     } else {
-      List(selection: $selectedItemID) {
+      List(selection: selectedItemIDBinding) {
         ForEach(viewModel.filteredItems) { item in
           ItemRow(item: item)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -399,10 +414,7 @@ struct LibraryView: View {
       do {
         let disposition = try await viewModel.openAttachment(attachment.id, for: item.id)
         if disposition == .inAppPDF {
-          openWindow(
-            id: "pdf-reader",
-            value: PDFReaderRequest(itemID: item.id, attachmentID: attachment.id)
-          )
+          viewModel.openInReader(itemID: item.id, attachmentID: attachment.id)
         }
       } catch {
         actionError = error.localizedDescription
@@ -473,25 +485,37 @@ extension AttachmentRole {
 private struct ItemRow: View {
   let item: LibraryItem
 
+  private var metadataSummary: String {
+    var parts: [String] = []
+    if let year = item.publicationYear {
+      parts.append(String(year))
+    }
+    if let publication = item.publicationTitle, !publication.isEmpty {
+      parts.append(publication)
+    }
+    if let type = item.literatureType, !type.isEmpty {
+      parts.append(type)
+    }
+    if let pages = item.pageRange, !pages.isEmpty {
+      parts.append("pp. \(pages)")
+    }
+    return parts.joined(separator: " | ")
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack {
-        Text(item.authorNames.isEmpty ? "Unknown Author" : item.authorNames.joined(separator: ", "))
-          .font(.subheadline.weight(.semibold))
-          .lineLimit(1)
-        Spacer()
-        if let year = item.publicationYear {
-          Text(String(year))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-      }
+    VStack(alignment: .leading, spacing: 3) {
       Text(item.title)
-        .font(.body)
+        .font(.headline)
         .lineLimit(2)
         .foregroundStyle(.primary)
-      if let publication = item.publicationTitle, !publication.isEmpty {
-        Text(publication)
+
+      Text(item.authorNames.isEmpty ? "Unknown Author" : item.authorNames.joined(separator: ", "))
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+
+      if !metadataSummary.isEmpty {
+        Text(metadataSummary)
           .font(.caption)
           .foregroundStyle(.secondary)
           .lineLimit(1)
