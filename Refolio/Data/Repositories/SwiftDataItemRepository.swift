@@ -15,6 +15,17 @@ final class SwiftDataItemRepository: ItemRepository {
             .map(Self.libraryItem(from:))
     }
 
+    func findNonTrashed(doi: String) throws -> [LibraryItem] {
+        let normalized = DOIString.normalize(doi) ?? doi
+        return try modelContext.fetch(FetchDescriptor<Item>())
+            .filter { !$0.isTrashed }
+            .filter { item in
+                guard let itemDOI = item.doi else { return false }
+                return DOIString.normalize(itemDOI) == normalized
+            }
+            .map(Self.libraryItem(from:))
+    }
+
     func fetchFolders() throws -> [LibraryFolder] {
         try modelContext.fetch(FetchDescriptor<Folder>())
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }

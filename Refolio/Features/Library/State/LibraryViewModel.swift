@@ -11,6 +11,7 @@ final class LibraryViewModel {
     private(set) var notesByItemID: [UUID: [LiteratureNote]] = [:]
     var searchText = ""
     var selectedFolder: FolderSelection? = .allItems
+    var attachmentFilter: ItemAttachmentFilter = .all
     private(set) var loadError: String?
 
     init(workflow: ItemLibraryWorkflow) {
@@ -31,8 +32,20 @@ final class LibraryViewModel {
                 !item.isTrashed && item.folderIDs.contains(folderID)
             }
         }
-        guard !query.isEmpty else { return inFolder }
-        return inFolder.filter { item in
+
+        let inAttachmentFilter = inFolder.filter { item in
+            switch attachmentFilter {
+            case .all:
+                true
+            case .hasMainFile:
+                item.hasMainAttachment
+            case .missingMainFile:
+                !item.hasMainAttachment
+            }
+        }
+
+        guard !query.isEmpty else { return inAttachmentFilter }
+        return inAttachmentFilter.filter { item in
             item.title.localizedCaseInsensitiveContains(query)
                 || (item.doi?.localizedCaseInsensitiveContains(query) ?? false)
                 || (item.publicationTitle?.localizedCaseInsensitiveContains(query) ?? false)
@@ -52,6 +65,15 @@ final class LibraryViewModel {
 
     func clearLoadError() {
         loadError = nil
+    }
+
+    func lookupDOI(_ rawDOI: String) async -> Result<ItemDraft, Error> {
+        do {
+            let draft = try await workflow.lookupDOI(rawDOI)
+            return .success(draft)
+        } catch {
+            return .failure(error)
+        }
     }
 
     func createItem(_ draft: ItemDraft) -> String? {

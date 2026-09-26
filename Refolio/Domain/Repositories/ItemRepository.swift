@@ -6,6 +6,7 @@ protocol ItemRepository {
     func fetchFolders() throws -> [LibraryFolder]
     func create(_ draft: ItemDraft, in folderID: UUID?) throws -> LibraryItem
     func update(_ itemID: UUID, from draft: ItemDraft) throws
+    func findNonTrashed(doi: String) throws -> [LibraryItem]
     func createFolder(named name: String) throws -> LibraryFolder
     func add(_ itemID: UUID, to folderID: UUID) throws
     func moveToTrash(_ itemID: UUID) throws

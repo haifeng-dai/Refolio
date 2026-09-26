@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct NewItemView: View {
+struct ItemEditorView: View {
     let item: LibraryItem?
     let onSave: (ItemDraft) -> String?
 
@@ -32,22 +32,26 @@ struct NewItemView: View {
         "Other"
     ]
 
-    init(item: LibraryItem? = nil, onSave: @escaping (ItemDraft) -> String?) {
+    init(
+        item: LibraryItem? = nil,
+        initialDraft: ItemDraft? = nil,
+        onSave: @escaping (ItemDraft) -> String?
+    ) {
         self.item = item
         self.onSave = onSave
-        _title = State(initialValue: item?.title ?? "")
-        _doi = State(initialValue: item?.doi ?? "")
-        _authorLines = State(initialValue: item?.authorNames.joined(separator: "\n") ?? "")
-        _publicationTitle = State(initialValue: item?.publicationTitle ?? "")
-        _literatureType = State(initialValue: item?.literatureType ?? Self.literatureTypes[0])
-        _year = State(initialValue: item?.publicationYear.map(String.init) ?? "")
-        _month = State(initialValue: item?.publicationMonth.map(String.init) ?? "")
-        _day = State(initialValue: item?.publicationDay.map(String.init) ?? "")
-        _abstract = State(initialValue: item?.abstract ?? "")
-        _volume = State(initialValue: item?.volume ?? "")
-        _issue = State(initialValue: item?.issue ?? "")
-        _pageRange = State(initialValue: item?.pageRange ?? "")
-        _url = State(initialValue: item?.urlString ?? "")
+        _title = State(initialValue: item?.title ?? initialDraft?.title ?? "")
+        _doi = State(initialValue: item?.doi ?? initialDraft?.doi ?? "")
+        _authorLines = State(initialValue: item?.authorNames.joined(separator: "\n") ?? initialDraft?.authorNames.joined(separator: "\n") ?? "")
+        _publicationTitle = State(initialValue: item?.publicationTitle ?? initialDraft?.publicationTitle ?? "")
+        _literatureType = State(initialValue: item?.literatureType ?? initialDraft?.literatureType ?? Self.literatureTypes[0])
+        _year = State(initialValue: item?.publicationYear.map(String.init) ?? initialDraft?.publicationYear.map(String.init) ?? "")
+        _month = State(initialValue: item?.publicationMonth.map(String.init) ?? initialDraft?.publicationMonth.map(String.init) ?? "")
+        _day = State(initialValue: item?.publicationDay.map(String.init) ?? initialDraft?.publicationDay.map(String.init) ?? "")
+        _abstract = State(initialValue: item?.abstract ?? initialDraft?.abstract ?? "")
+        _volume = State(initialValue: item?.volume ?? initialDraft?.volume ?? "")
+        _issue = State(initialValue: item?.issue ?? initialDraft?.issue ?? "")
+        _pageRange = State(initialValue: item?.pageRange ?? initialDraft?.pageRange ?? "")
+        _url = State(initialValue: item?.urlString ?? initialDraft?.urlString ?? "")
     }
 
     var body: some View {
@@ -99,12 +103,6 @@ struct NewItemView: View {
                         }
                 }
 
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
-                    }
-                }
                 }
                 .formStyle(.grouped)
                 HStack {
@@ -119,6 +117,13 @@ struct NewItemView: View {
             .navigationTitle(item == nil ? "New Item" : "Edit Item")
         }
         .frame(width: 620, height: 720)
+        .alert("Could Not Save Item", isPresented: errorIsPresented) {
+            Button("OK") {
+                errorMessage = nil
+            }
+        } message: {
+            Text(errorMessage ?? "Please try again.")
+        }
     }
 
     private func save() {
@@ -163,6 +168,17 @@ struct NewItemView: View {
     private func optionalText(_ value: String) -> String? {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
+    }
+
+    private var errorIsPresented: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: {
+                if !$0 {
+                    errorMessage = nil
+                }
+            }
+        )
     }
 }
 

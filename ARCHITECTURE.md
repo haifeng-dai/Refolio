@@ -4,7 +4,7 @@
 
 ## 一、整体设计
 
-Refolio 是原生 macOS 文献管理应用。当前已实现本地文献、文件夹、回收站、附件导入、PDF 应用内阅读和文献笔记；按附件恢复精确阅读位置已运行验收，笔记界面代码已接入、待运行验收。DOI 在线获取仍是计划。
+Refolio 是原生 macOS 文献管理应用。当前已实现本地文献、文件夹、回收站、附件导入、PDF 应用内阅读、文献笔记和 DOI 在线获取；按附件恢复精确阅读位置已运行验收，笔记界面代码已接入、待运行验收。
 
 项目目前只有一个 Xcode App target。代码在 UI 侧按功能组织，在其余部分按职责组织。需要新的真实功能时再增加文件或目录，不预建空模块。
 
@@ -43,7 +43,7 @@ flowchart LR
 | 手动新增、右键编辑文献 | 已实现 |
 | 新增文件夹、将文献加入文件夹 | 已实现 |
 | 移入回收站、恢复文献 | 已实现；属于软删除 |
-| 手动填写 DOI 字符串 | 已实现；没有 DOI 在线查询 |
+| 手动填写 DOI 字符串、通过 DOI 获取元数据 | 已实现；通过 Crossref 查询并进入通用文献编辑窗口 |
 | 导入文献附件 | 已实现；支持各类文件，保存在应用管理的本地目录 |
 | 打开附件 | 已实现；PDF 在独立窗口内用 PDFKit 打开，其他文件交给系统打开 |
 | 按附件记住 PDF 精确阅读位置 | 已实现并运行验收 |
@@ -61,7 +61,7 @@ Refolio/
 ├── Features/Library/
 │   ├── UI/
 │   │   ├── LibraryView.swift
-│   │   ├── NewItemView.swift
+│   │   ├── ItemEditorView.swift
 │   │   ├── NewFolderView.swift
 │   │   └── ItemDetailView.swift
 │   └── State/
@@ -70,12 +70,18 @@ Refolio/
 │   └── PDFReaderView.swift
 ├── Features/Notes/UI/
 │   └── LiteratureNotesView.swift
-├── Application/Workflows/
-│   └── ItemLibraryWorkflow.swift
+├── Application/
+│   ├── Workflows/
+│   │   └── ItemLibraryWorkflow.swift
+│   └── Operations/
+│       ├── ItemCreateOperation.swift
+│       ├── AttachImportOperation.swift
+│       └── ItemDraftSupport.swift
 ├── Domain/
 │   ├── Models/
 │   │   ├── ItemDraft.swift
-│   │   └── LiteratureNote.swift
+│   │   ├── LiteratureNote.swift
+│   │   └── DOIString.swift
 │   └── Repositories/ItemRepository.swift
 ├── Data/
 │   ├── FileStorage/
@@ -101,8 +107,9 @@ Refolio/
 | `App` | 容器创建、具体实现装配、依赖注入 | 文献业务规则、UI 操作步骤 |
 | `Features/Library/UI` | 展示、交互、表单和弹窗；把用户动作交给视图模型 | `ModelContext`、SQL/SwiftData 查询、文件复制、HTTP 请求 |
 | `Features/Library/State` | 供视图使用的快照、搜索与导航状态、一个动作对应的入口 | SwiftData 模型关系及文件系统细节 |
-| `Application/Workflows` | 输入规范化、业务校验、多个底层能力之间的步骤 | SwiftData 实体和视图组件 |
-| `Domain` | 工作流输入/输出类型、底层接口 | 实际数据库或网络实现 |
+| `Application/Workflows` | 一个用户动作的入口、步骤顺序 | SwiftData 实体和视图组件 |
+| `Application/Operations` | 可复用的底层 API 组合（查重+创建、附件导入补偿） | UI 状态、网络细节 |
+| `Domain` | 工作流输入/输出类型、底层接口、纯规则（如 DOI 归一化） | 实际数据库或网络实现 |
 | `Data` | 模型、持久化查询、实体关系、保存 | 窗口、弹窗或工具栏状态 |
 
 依赖从 UI 指向编排层，编排层只依赖 `Domain` 的 `ItemRepository`。`Data` 实现该接口，`App` 将具体实现提供给工作流。视图不创建仓储；仓储不引用 SwiftUI。
@@ -112,9 +119,9 @@ Refolio/
 ### 新代码放在哪里
 
 - 新表单、菜单、阅读界面：先放在对应功能的 `Features` 目录。
-- 用户动作涉及校验、网络与数据库、或文件与数据库的先后顺序：在 `Application/Workflows` 给出一个明确的动作入口。
+- 用户动作涉及校验、网络与数据库、或文件与数据库的先后顺序：在 `Application/Workflows` 给出一个明确的动作入口；若同一组合会被多条流程复用（如查重+入库、附件导入回退），抽到 `Application/Operations`。
 - SwiftData 查询、实体关联、同一次保存：放在 `Data`。这些步骤可以在仓储内复用私有方法。
-- PDF 文件复制和路径解析：由 `Data/FileStorage/LocalAttachmentFileStore` 实现；工作流协调附件记录与文件操作。DOI 请求与解析仍未实现。
+- PDF 文件复制和路径解析：由 `Data/FileStorage/LocalAttachmentFileStore` 实现；`AttachImportOperation` 协调附件记录与文件操作（失败时删除已复制文件）。DOI 请求与解析由 `Integrations/CrossrefClient` 和 `Application/Operations/DOILookupOperation` 实现。
 - 协议只用于真实跨层能力边界；不为每个私有函数单独创建协议。
 
 ## 三、启动、装配和线程
@@ -123,7 +130,7 @@ Refolio/
 
 Debug 构建调用 `DebugSampleData.seedIfNeeded`：仅当 `Item` 表为空时插入三篇示例文献和一个示例文件夹，前两篇属于该文件夹。已有文献时不会再次播种。当前容器或示例数据初始化失败会 `fatalError`。
 
-`LibraryViewModel`、`ItemLibraryWorkflow` 和 `SwiftDataItemRepository` 当前都标为 `@MainActor`；仓储使用主 `ModelContext`，方法为同步 `throws`。文件存储通过异步接口复制、删除文件并解析应用内相对路径。PDF 阅读页通过附件记录持久化；网络请求尚未实现。
+`LibraryViewModel`、`ItemLibraryWorkflow` 和 `SwiftDataItemRepository` 当前都标为 `@MainActor`；仓储使用主 `ModelContext`，方法为同步 `throws`。文件存储通过异步接口复制、删除文件并解析应用内相对路径。PDF 阅读页通过附件记录持久化；DOI 网络请求通过 Crossref 客户端完成。
 
 ## 四、数据模型
 
@@ -172,11 +179,11 @@ UI 不直接持有可变 `Item`。编辑时用 `LibraryItem` 预填表单，再�
 - `Authorship.role` 是当前未使用的可选字段；现有创建和编辑表单不输入它，新增关联时它为 `nil`。
 - 同名文件夹在仓储中被复用，名称比较忽略大小写和变音符号。同一文献重复加入同一文件夹时，仓储不插入第二条关联。
 
-当前没有 DOI 唯一约束或文献去重工作流。按姓名复用作者是现有规则，不能据此认定同名作者必然是同一人。
+当前创建/编辑会在 `ItemCreateOperation` 中做 DOI 归一化与未回收站查重（`ItemRepository.findNonTrashed(doi:)`），重复 DOI 拒绝写入并由 UI 警告；尚未做标题相似去重。按姓名复用作者是现有规则，不能据此认定同名作者必然是同一人。
 
 ## 五、界面结构与状态
 
-`LibraryView` 使用两列 `NavigationSplitView`：左侧是 Library/文件夹导航，主内容是文献列表；文献资料通过附着在列表上的原生 `inspector` 呈现。左侧工具栏有新增文件夹；主内容工具栏有 `+` 菜单，其“Add Manually”打开手动新增表单，另有原生搜索项。DOI 菜单项还没有实现。
+`LibraryView` 使用两列 `NavigationSplitView`：左侧是 Library/文件夹导航，主内容是文献列表；文献资料通过附着在列表上的原生 `inspector` 呈现。左侧工具栏有新增文件夹；主内容工具栏有 `+` 菜单，其“Add Manually”打开通用文献编辑表单，“Add by DOI…”先查询 DOI，再打开同一个编辑表单，另有原生搜索项。
 
 UI 宽度常量集中在 `LibraryView.swift` 顶部：侧栏最小 180、最大 340；inspector 最小 180、理想 260、最大 300。窗口最小尺寸为 900 × 600。它们属于 UI 布局，不进入工作流或仓储。
 
@@ -263,7 +270,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor User as 用户
-    participant UI as LibraryView / NewItemView
+    participant UI as LibraryView / ItemEditorView
     participant VM as LibraryViewModel
     participant WF as ItemLibraryWorkflow
     participant Repo as SwiftDataItemRepository
@@ -293,7 +300,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor User as 用户
-    participant UI as LibraryView / NewItemView
+    participant UI as LibraryView / ItemEditorView
     participant VM as LibraryViewModel
     participant WF as ItemLibraryWorkflow
     participant Repo as SwiftDataItemRepository
@@ -414,7 +421,7 @@ sequenceDiagram
 
 ### DOI 在线获取
 
-当前 DOI 文本框仅保存手动输入。未来通过 DOI 新增时，UI 应调用一个工作流；工作流协调 DOI 网络客户端、资料映射、用户确认和持久化。HTTP 请求与响应解析归底层集成，SwiftData 仓储不发网络请求。当前没有 DOI 客户端、DOI 菜单项或自动查重规则。
+已实现「Add by DOI…」：`DoiLookupView` 粘贴 DOI → `ItemLibraryWorkflow.lookupDOI` → `DOILookupOperation` → `CrossrefClient` → 映射为 `ItemDraft` → 关闭查询窗口并预填 `ItemEditorView` → 用户确认后走 `ItemCreateOperation` 入库到当前文件夹（含 DOI 查重）。HTTP 与 JSON 解码在 `Integrations`，不依赖 Domain；DTO→ItemDraft 映射只在 Application。尚未做标题相似去重、多数据源与 PDF 内嵌 DOI 提取。
 
 ## 八、扩展时保持的边界
 

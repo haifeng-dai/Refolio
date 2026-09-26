@@ -98,3 +98,33 @@ enum FolderSelection: Hashable {
     case trash
     case folder(UUID)
 }
+
+enum ItemAttachmentFilter: String, CaseIterable, Identifiable {
+    case all
+    case hasMainFile
+    case missingMainFile
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All Items"
+        case .hasMainFile: "With Main File (PDF)"
+        case .missingMainFile: "Without Main File"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: "tray.full"
+        case .hasMainFile: "doc.richtext"
+        case .missingMainFile: "doc.badge.ellipsis"
+        }
+    }
+}
+
+extension LibraryItem {
+    var hasMainAttachment: Bool {
+        attachments.contains { $0.role == .main }
+    }
+}
