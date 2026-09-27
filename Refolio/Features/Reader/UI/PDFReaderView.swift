@@ -14,6 +14,8 @@ extension Notification.Name {
 @Observable
 final class PDFReaderSplitViewState {
     var isDetailCollapsed: Bool = false
+    var sidebarWidth: CGFloat = 280
+    var detailWidth: CGFloat = 0
 }
 
 private enum SidebarTab: String, CaseIterable, Identifiable {
@@ -190,11 +192,14 @@ struct PDFReaderView: View {
                 }
         } content: {
             pdfContent
-                .navigationTitle(fileName)
-                .navigationSubtitle(document.map { "Page \(currentPageIndex + 1) of \($0.pageCount)" } ?? "")
+                .navigationTitle("")
                 .navigationSplitViewColumnWidth(min: contentMinimumWidth, ideal: contentIdealWidth)
                 .toolbar {
-                    ToolbarItemGroup(placement: .automatic) {
+                    ToolbarItem(placement: .principal) {
+                        SafariCapsuleTabBar()
+                    }
+
+                    ToolbarItemGroup(placement: .primaryAction) {
                         Button {
                             pdfView?.goToPreviousPage(nil)
                         } label: {
@@ -203,6 +208,12 @@ struct PDFReaderView: View {
                         .labelStyle(.iconOnly)
                         .help("Previous Page")
                         .disabled(currentPageIndex <= 0)
+
+                        if let document {
+                            Text("\(currentPageIndex + 1) / \(document.pageCount)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
 
                         Button {
                             pdfView?.goToNextPage(nil)
@@ -238,9 +249,7 @@ struct PDFReaderView: View {
                         }
                         .labelStyle(.iconOnly)
                         .help("Fit to Page")
-                    }
 
-                    ToolbarItem(placement: .automatic) {
                         Button {
                             NotificationCenter.default.post(name: .togglePDFReaderDetailColumn, object: nil)
                         } label: {
@@ -1027,7 +1036,39 @@ private final class PDFReaderSplitConfigObserverView: NSView {
             detailObservation = items[2].observe(\.isCollapsed, options: [.initial, .new]) { [weak self] item, _ in
                 DispatchQueue.main.async {
                     self?.splitViewState?.isDetailCollapsed = item.isCollapsed
+                    self?.updateCenterOffset()
                 }
+            }
+        }
+
+        NotificationCenter.default.removeObserver(self, name: NSSplitView.didResizeSubviewsNotification, object: splitView)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleSplitViewDidResize),
+            name: NSSplitView.didResizeSubviewsNotification,
+            object: splitView
+        )
+
+        updateCenterOffset()
+    }
+
+    @objc private func handleSplitViewDidResize() {
+        updateCenterOffset()
+    }
+
+    private func updateCenterOffset() {
+        guard let splitVC, splitVC.splitViewItems.count >= 3 else { return }
+        let items = splitVC.splitViewItems
+        let leftWidth: CGFloat = items[0].isCollapsed ? 0 : items[0].viewController.view.frame.width
+        let rightWidth: CGFloat = items[2].isCollapsed ? 0 : items[2].viewController.view.frame.width
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let state = self.splitViewState else { return }
+            if abs(state.sidebarWidth - leftWidth) > 0.5 {
+                state.sidebarWidth = leftWidth
+            }
+            if abs(state.detailWidth - rightWidth) > 0.5 {
+                state.detailWidth = rightWidth
             }
         }
     }

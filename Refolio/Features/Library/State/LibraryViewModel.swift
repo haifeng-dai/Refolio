@@ -22,21 +22,56 @@ final class LibraryViewModel {
     private(set) var loadError: String?
 
     var workspaceMode: MainWorkspaceMode = .library
-    var activeReaderRequest: PDFReaderRequest? = nil
+    var openDocuments: [PDFReaderRequest] = []
+    var activeDocumentAttachmentID: UUID?
     var selectedItemID: UUID?
+
+    var activeReaderRequest: PDFReaderRequest? {
+        guard let activeID = activeDocumentAttachmentID else {
+            return openDocuments.last
+        }
+        return openDocuments.first(where: { $0.attachmentID == activeID }) ?? openDocuments.last
+    }
 
     var activeReaderTitle: String? {
         guard let request = activeReaderRequest else { return nil }
-        return items.first(where: { $0.id == request.itemID })?.title
+        return title(for: request)
+    }
+
+    func title(for request: PDFReaderRequest) -> String {
+        items.first(where: { $0.id == request.itemID })?.title ?? "Document"
     }
 
     func openInReader(itemID: UUID, attachmentID: UUID) {
-        activeReaderRequest = PDFReaderRequest(itemID: itemID, attachmentID: attachmentID)
+        let request = PDFReaderRequest(itemID: itemID, attachmentID: attachmentID)
+        if !openDocuments.contains(request) {
+            openDocuments.append(request)
+        }
+        activeDocumentAttachmentID = attachmentID
         workspaceMode = .reader
     }
 
+    func selectDocument(_ request: PDFReaderRequest) {
+        activeDocumentAttachmentID = request.attachmentID
+        workspaceMode = .reader
+    }
+
+    func closeDocument(_ request: PDFReaderRequest) {
+        guard let index = openDocuments.firstIndex(of: request) else { return }
+        let isClosingActive = (activeDocumentAttachmentID == request.attachmentID)
+        openDocuments.remove(at: index)
+
+        if openDocuments.isEmpty {
+            activeDocumentAttachmentID = nil
+            workspaceMode = .library
+        } else if isClosingActive {
+            let newIndex = min(index, openDocuments.count - 1)
+            activeDocumentAttachmentID = openDocuments[newIndex].attachmentID
+        }
+    }
+
     func switchToReader() {
-        if activeReaderRequest == nil,
+        if openDocuments.isEmpty,
            let selectedID = selectedItemID,
            let selected = items.first(where: { $0.id == selectedID }),
            let mainAttachment = selected.attachments.first(where: { $0.role == .main }) {
