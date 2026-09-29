@@ -5,6 +5,10 @@ import SwiftData
 final class SwiftDataItemRepository: ItemRepository {
     private let modelContext: ModelContext
 
+    private struct ResolvedAuthor {
+        let author: Author
+    }
+
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
     }
@@ -40,7 +44,7 @@ final class SwiftDataItemRepository: ItemRepository {
 
     func create(_ draft: ItemDraft, in folderID: UUID?) throws -> LibraryItem {
         let publication = try resolvePublication(for: draft)
-        let authors = try resolveAuthors(named: draft.authorNames)
+        let authors = try resolveAuthors(for: draft.authors)
         let folder = try folderID.map(resolveFolder(id:))
 
         let item = Item(
@@ -62,8 +66,8 @@ final class SwiftDataItemRepository: ItemRepository {
             modelContext.insert(FolderMembership(folder: folder, item: item))
         }
 
-        for (position, author) in authors.enumerated() {
-            let authorship = Authorship(position: position, item: item, author: author)
+        for (position, resolved) in authors.enumerated() {
+            let authorship = Authorship(position: position, item: item, author: resolved.author)
             modelContext.insert(authorship)
         }
 
@@ -85,24 +89,64 @@ final class SwiftDataItemRepository: ItemRepository {
         item.urlString = draft.urlString
         item.publication = try resolvePublication(for: draft)
 
-        let existingAuthorNames = item.authorships
+        let existingAuthors = item.authorships
             .sorted { $0.position < $1.position }
-            .compactMap { $0.author?.displayName }
-        if existingAuthorNames != draft.authorNames {
-            let oldAuthorships = item.authorships
-            item.authorships = []
-            for authorship in oldAuthorships {
-                modelContext.delete(authorship)
+            .compactMap { authorship -> AuthorDraft? in
+                guard let author = authorship.author else { return nil }
+                return AuthorDraft(
+                    givenName: author.givenName,
+                    familyName: author.familyName,
+                    literalName: author.literalName,
+                    orcid: author.orcid
+                )
             }
-
-            let authors = try resolveAuthors(named: draft.authorNames)
-            for (position, author) in authors.enumerated() {
-                modelContext.insert(Authorship(position: position, item: item, author: author))
-            }
+        if existingAuthors != draft.authors {
+            try mergeAuthorships(of: item, with: draft.authors)
         }
 
         item.updatedAt = .now
         try modelContext.save()
+    }
+
+    private func mergeAuthorships(of item: Item, with drafts: [AuthorDraft]) throws {
+        let existingAuthorships = item.authorships.sorted { $0.position < $1.position }
+        let authors = try resolveAuthors(for: drafts)
+        var existingByAuthorID: [UUID: [Authorship]] = [:]
+        for authorship in existingAuthorships {
+            guard let authorID = authorship.author?.id else { continue }
+            existingByAuthorID[authorID, default: []].append(authorship)
+        }
+
+        var usedAuthorshipIDs = Set<UUID>()
+        var mergedAuthorships: [Authorship] = []
+        mergedAuthorships.reserveCapacity(authors.count)
+
+        for (position, resolved) in authors.enumerated() {
+            let existing = existingByAuthorID[resolved.author.id]?.first {
+                !usedAuthorshipIDs.contains($0.id)
+            }
+            if let existing {
+                usedAuthorshipIDs.insert(existing.id)
+                if existing.position != position {
+                    existing.position = position
+                }
+                mergedAuthorships.append(existing)
+            } else {
+                let authorship = Authorship(position: position, item: item, author: resolved.author)
+                modelContext.insert(authorship)
+                mergedAuthorships.append(authorship)
+            }
+        }
+
+        for authorship in existingAuthorships where !usedAuthorshipIDs.contains(authorship.id) {
+            modelContext.delete(authorship)
+        }
+
+        let existingIDs = Set(existingAuthorships.map(\.id))
+        let mergedIDs = Set(mergedAuthorships.map(\.id))
+        if existingIDs != mergedIDs {
+            item.authorships = mergedAuthorships
+        }
     }
 
     func createFolder(named name: String) throws -> LibraryFolder {
@@ -123,12 +167,33 @@ final class SwiftDataItemRepository: ItemRepository {
         return LibraryFolder(id: folder.id, name: folder.name, itemCount: 0)
     }
 
-    func add(_ itemID: UUID, to folderID: UUID) throws {
-        let item = try resolveItem(id: itemID)
+    func add(_ itemIDs: Set<UUID>, to folderID: UUID) throws {
+        guard !itemIDs.isEmpty else { return }
+
         let folder = try resolveFolder(id: folderID)
-        guard !item.folderMemberships.contains(where: { $0.folder?.id == folderID }) else { return }
-        modelContext.insert(FolderMembership(folder: folder, item: item))
-        try modelContext.save()
+        let items = try itemIDs.map { try resolveItem(id: $0) }
+        let membershipsToAdd = items
+            .filter { item in
+                !item.folderMemberships.contains(where: { $0.folder?.id == folderID })
+            }
+            .map { FolderMembership(folder: folder, item: $0) }
+
+        guard !membershipsToAdd.isEmpty else { return }
+
+        do {
+            try modelContext.transaction {
+                for membership in membershipsToAdd {
+                    modelContext.insert(membership)
+                }
+            }
+        } catch {
+            for membership in membershipsToAdd {
+                membership.item?.folderMemberships.removeAll { $0.id == membership.id }
+                membership.folder?.memberships.removeAll { $0.id == membership.id }
+                modelContext.delete(membership)
+            }
+            throw error
+        }
     }
 
     func moveToTrash(_ itemID: UUID) throws {
@@ -258,9 +323,305 @@ final class SwiftDataItemRepository: ItemRepository {
         try modelContext.save()
     }
 
+    func fetchTextHighlights(for attachmentID: UUID, in itemID: UUID) throws -> [TextHighlight] {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        return try attachment.textHighlights
+            .sorted { $0.createdAt < $1.createdAt }
+            .map(Self.textHighlight(from:))
+    }
+
+    func createTextHighlight(
+        _ draft: TextHighlightDraft,
+        for attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> TextHighlight {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        let record = TextHighlightRecord(
+            selectedText: draft.selectedText,
+            color: draft.color,
+            geometryData: try JSONEncoder().encode(draft.pages),
+            attachment: attachment
+        )
+        modelContext.insert(record)
+        do {
+            try modelContext.save()
+        } catch {
+            attachment.textHighlights.removeAll { $0.id == record.id }
+            modelContext.delete(record)
+            throw error
+        }
+        return TextHighlight(
+            id: record.id,
+            selectedText: record.selectedText,
+            createdAt: record.createdAt,
+            color: record.color,
+            pages: draft.pages
+        )
+    }
+
+    func updateTextHighlightGeometry(
+        _ pages: [TextHighlightPage],
+        for highlightID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> TextHighlight {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard let record = attachment.textHighlights.first(where: { $0.id == highlightID }) else {
+            throw LibraryRepositoryError.textHighlightNotFound
+        }
+
+        let previousGeometry = record.geometryData
+        record.geometryData = try JSONEncoder().encode(pages)
+        do {
+            try modelContext.save()
+        } catch {
+            record.geometryData = previousGeometry
+            throw error
+        }
+
+        return TextHighlight(
+            id: record.id,
+            selectedText: record.selectedText,
+            createdAt: record.createdAt,
+            color: record.color,
+            pages: pages
+        )
+    }
+
+    func deleteTextHighlight(_ highlightID: UUID, attachmentID: UUID, in itemID: UUID) throws {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard let record = attachment.textHighlights.first(where: { $0.id == highlightID }) else {
+            throw LibraryRepositoryError.textHighlightNotFound
+        }
+        deleteAnnotationComments(for: highlightID, from: attachment)
+        modelContext.delete(record)
+        try modelContext.save()
+    }
+
+    func updateTextHighlightColor(
+        _ color: TextHighlightColor,
+        for highlightID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> TextHighlight {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard let record = attachment.textHighlights.first(where: { $0.id == highlightID }) else {
+            throw LibraryRepositoryError.textHighlightNotFound
+        }
+        let previousColor = record.color
+        record.colorRed = color.red
+        record.colorGreen = color.green
+        record.colorBlue = color.blue
+        record.colorAlpha = color.alpha
+        do {
+            try modelContext.save()
+        } catch {
+            record.colorRed = previousColor.red
+            record.colorGreen = previousColor.green
+            record.colorBlue = previousColor.blue
+            record.colorAlpha = previousColor.alpha
+            throw error
+        }
+        return try Self.textHighlight(from: record)
+    }
+
+    func fetchRectangleMarks(for attachmentID: UUID, in itemID: UUID) throws -> [RectangleMark] {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        return attachment.rectangleMarks
+            .sorted { $0.createdAt < $1.createdAt }
+            .map(Self.rectangleMark(from:))
+    }
+
+    func createRectangleMark(
+        _ draft: RectangleMarkDraft,
+        for attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> RectangleMark {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        let record = RectangleMarkRecord(
+            pageIndex: draft.pageIndex,
+            x: draft.x,
+            y: draft.y,
+            width: draft.width,
+            height: draft.height,
+            color: draft.color,
+            attachment: attachment
+        )
+        modelContext.insert(record)
+        do {
+            try modelContext.save()
+        } catch {
+            attachment.rectangleMarks.removeAll { $0.id == record.id }
+            modelContext.delete(record)
+            throw error
+        }
+        return Self.rectangleMark(from: record)
+    }
+
+    func deleteRectangleMark(_ markID: UUID, attachmentID: UUID, in itemID: UUID) throws {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard let record = attachment.rectangleMarks.first(where: { $0.id == markID }) else {
+            throw LibraryRepositoryError.rectangleMarkNotFound
+        }
+        deleteAnnotationComments(for: markID, from: attachment)
+        modelContext.delete(record)
+        try modelContext.save()
+    }
+
+    func updateRectangleMarkColor(
+        _ color: TextHighlightColor,
+        for markID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> RectangleMark {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard let record = attachment.rectangleMarks.first(where: { $0.id == markID }) else {
+            throw LibraryRepositoryError.rectangleMarkNotFound
+        }
+        let previousColor = record.color
+        record.colorRed = color.red
+        record.colorGreen = color.green
+        record.colorBlue = color.blue
+        record.colorAlpha = color.alpha
+        do {
+            try modelContext.save()
+        } catch {
+            record.colorRed = previousColor.red
+            record.colorGreen = previousColor.green
+            record.colorBlue = previousColor.blue
+            record.colorAlpha = previousColor.alpha
+            throw error
+        }
+        return Self.rectangleMark(from: record)
+    }
+
+    func fetchAnnotationComments(for attachmentID: UUID, in itemID: UUID) throws -> [AnnotationComment] {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        return attachment.annotationComments
+            .sorted { $0.updatedAt < $1.updatedAt }
+            .map(Self.annotationComment(from:))
+    }
+
+    func createAnnotationComment(
+        _ draft: AnnotationCommentDraft,
+        for annotationID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> AnnotationComment {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard attachment.textHighlights.contains(where: { $0.id == annotationID })
+                || attachment.rectangleMarks.contains(where: { $0.id == annotationID }) else {
+            throw LibraryRepositoryError.annotationNotFound
+        }
+        let record = AnnotationCommentRecord(
+            annotationID: annotationID,
+            content: draft.content,
+            attachment: attachment
+        )
+        modelContext.insert(record)
+        do {
+            try modelContext.save()
+        } catch {
+            attachment.annotationComments.removeAll { $0.id == record.id }
+            modelContext.delete(record)
+            throw error
+        }
+        return Self.annotationComment(from: record)
+    }
+
+    func updateAnnotationComment(
+        _ commentID: UUID,
+        content: String,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> AnnotationComment {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard let record = attachment.annotationComments.first(where: { $0.id == commentID }) else {
+            throw LibraryRepositoryError.annotationCommentNotFound
+        }
+        let previousContent = record.content
+        let previousUpdatedAt = record.updatedAt
+        record.content = content
+        record.updatedAt = .now
+        do {
+            try modelContext.save()
+        } catch {
+            record.content = previousContent
+            record.updatedAt = previousUpdatedAt
+            throw error
+        }
+        return Self.annotationComment(from: record)
+    }
+
+    func deleteAnnotationComment(_ commentID: UUID, attachmentID: UUID, in itemID: UUID) throws {
+        let attachment = try resolveAttachment(attachmentID, in: itemID)
+        guard let record = attachment.annotationComments.first(where: { $0.id == commentID }) else {
+            throw LibraryRepositoryError.annotationCommentNotFound
+        }
+        modelContext.delete(record)
+        try modelContext.save()
+    }
+
+    private func deleteAnnotationComments(for annotationID: UUID, from attachment: Attachment) {
+        for comment in attachment.annotationComments where comment.annotationID == annotationID {
+            modelContext.delete(comment)
+        }
+    }
+
+    private func resolveAttachment(_ attachmentID: UUID, in itemID: UUID) throws -> Attachment {
+        let item = try resolveItem(id: itemID)
+        guard let attachment = item.attachments.first(where: { $0.id == attachmentID }) else {
+            throw LibraryRepositoryError.attachmentNotFound
+        }
+        return attachment
+    }
+
+    private static func textHighlight(from record: TextHighlightRecord) throws -> TextHighlight {
+        let pages: [TextHighlightPage]
+        do {
+            pages = try JSONDecoder().decode([TextHighlightPage].self, from: record.geometryData)
+        } catch {
+            throw LibraryRepositoryError.invalidHighlightGeometry
+        }
+        return TextHighlight(
+            id: record.id,
+            selectedText: record.selectedText,
+            createdAt: record.createdAt,
+            color: record.color,
+            pages: pages
+        )
+    }
+
+    private static func rectangleMark(from record: RectangleMarkRecord) -> RectangleMark {
+        RectangleMark(
+            id: record.id,
+            pageIndex: record.pageIndex,
+            x: record.x,
+            y: record.y,
+            width: record.width,
+            height: record.height,
+            createdAt: record.createdAt,
+            color: record.color
+        )
+    }
+
+    private static func annotationComment(from record: AnnotationCommentRecord) -> AnnotationComment {
+        AnnotationComment(
+            id: record.id,
+            annotationID: record.annotationID,
+            content: record.content,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt
+        )
+    }
+
     private func resolvePublication(for draft: ItemDraft) throws -> Publication? {
-        guard let title = draft.publicationTitle else { return nil }
-        let literatureType = draft.literatureType ?? "Other"
+        try resolvePublication(title: draft.publicationTitle, literatureType: draft.literatureType)
+    }
+
+    private func resolvePublication(title: String?, literatureType: String?) throws -> Publication? {
+        guard let title = title?.trimmedOrNil else { return nil }
+        let literatureType = literatureType?.trimmedOrNil ?? "Other"
         let publications = try modelContext.fetch(FetchDescriptor<Publication>())
 
         if let existing = publications.first(where: {
@@ -289,20 +650,51 @@ final class SwiftDataItemRepository: ItemRepository {
         return item
     }
 
-    private func resolveAuthors(named names: [String]) throws -> [Author] {
+    private func resolveAuthors(for drafts: [AuthorDraft]) throws -> [ResolvedAuthor] {
         var knownAuthors = try modelContext.fetch(FetchDescriptor<Author>())
-        return names.map { name in
+        return drafts.compactMap { draft in
+            guard let draft = draft.normalized() else { return nil }
+
             if let existing = knownAuthors.first(where: {
-                $0.displayName.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                sameRepresentation($0, draft) && compatibleORCID($0.orcid, draft.orcid)
             }) {
-                return existing
+                return ResolvedAuthor(author: existing)
             }
 
-            let author = Author(literalName: name)
+            let author = Author(
+                givenName: draft.givenName,
+                familyName: draft.familyName,
+                literalName: draft.literalName,
+                orcid: draft.orcid
+            )
             modelContext.insert(author)
             knownAuthors.append(author)
-            return author
+            return ResolvedAuthor(author: author)
         }
+    }
+
+    private func sameRepresentation(_ author: Author, _ draft: AuthorDraft) -> Bool {
+        normalized(author.givenName) == normalized(draft.givenName)
+            && normalized(author.familyName) == normalized(draft.familyName)
+            && normalized(author.literalName) == normalized(draft.literalName)
+    }
+
+    private func compatibleORCID(_ existing: String?, _ incoming: String?) -> Bool {
+        switch (existing.flatMap(ORCIDString.normalize), incoming.flatMap(ORCIDString.normalize)) {
+        case (nil, nil):
+            true
+        case let (existing?, incoming?):
+            existing.caseInsensitiveCompare(incoming) == .orderedSame
+        default:
+            false
+        }
+    }
+
+    private func normalized(_ value: String?) -> String {
+        (value ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
     }
 
     private static func libraryItem(from item: Item) -> LibraryItem {
@@ -318,9 +710,6 @@ final class SwiftDataItemRepository: ItemRepository {
             issue: item.issue,
             pageRange: item.pageRange,
             urlString: item.urlString,
-            authorNames: item.authorships
-                .sorted { $0.position < $1.position }
-                .compactMap { $0.author?.displayName },
             publicationTitle: item.publication?.title,
             literatureType: item.publication?.literatureType,
             folderIDs: item.folderMemberships.compactMap { $0.folder?.id },
@@ -331,7 +720,18 @@ final class SwiftDataItemRepository: ItemRepository {
                     fileName: $0.fileName,
                     role: AttachmentRole(rawValue: $0.roleRawValue ?? "") ?? .other
                 )
-            }.sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
+            }.sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending },
+            authors: item.authorships
+                .sorted { $0.position < $1.position }
+                .compactMap { authorship in
+                    guard let author = authorship.author else { return nil }
+                    return AuthorDraft(
+                        givenName: author.givenName,
+                        familyName: author.familyName,
+                        literalName: author.literalName,
+                        orcid: author.orcid
+                    )
+                }
         )
     }
 
@@ -353,6 +753,11 @@ private enum LibraryRepositoryError: LocalizedError {
     case itemNotFound
     case attachmentNotFound
     case noteNotFound
+    case textHighlightNotFound
+    case rectangleMarkNotFound
+    case annotationNotFound
+    case annotationCommentNotFound
+    case invalidHighlightGeometry
 
     var errorDescription: String? {
         switch self {
@@ -360,6 +765,11 @@ private enum LibraryRepositoryError: LocalizedError {
         case .itemNotFound: "The selected item no longer exists."
         case .attachmentNotFound: "The attachment could not be found."
         case .noteNotFound: "The note could not be found."
+        case .textHighlightNotFound: "The highlight could not be found."
+        case .rectangleMarkNotFound: "The rectangle annotation could not be found."
+        case .annotationNotFound: "The selected annotation could not be found."
+        case .annotationCommentNotFound: "The annotation comment could not be found."
+        case .invalidHighlightGeometry: "The saved highlight geometry could not be read."
         }
     }
 }

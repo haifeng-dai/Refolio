@@ -18,3 +18,21 @@ enum DOIString {
         return value
     }
 }
+
+enum ORCIDString {
+    static func normalize(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in [
+            "https://orcid.org/",
+            "http://orcid.org/",
+            "orcid:"
+        ] {
+            if value.lowercased().hasPrefix(prefix) {
+                value = String(value.dropFirst(prefix.count))
+                break
+            }
+        }
+        value = value.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        return value.isEmpty ? nil : value
+    }
+}

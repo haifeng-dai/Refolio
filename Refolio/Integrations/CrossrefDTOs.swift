@@ -27,6 +27,7 @@ struct CrossrefAuthor: Decodable {
     let given: String?
     let family: String?
     let name: String?
+    let ORCID: String?
 }
 
 struct CrossrefDate: Decodable {

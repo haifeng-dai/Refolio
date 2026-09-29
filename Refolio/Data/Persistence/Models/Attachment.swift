@@ -23,6 +23,15 @@ final class Attachment {
     @Relationship(deleteRule: .nullify, inverse: \LiteratureNoteRecord.sourceAttachment)
     var sourceNotes: [LiteratureNoteRecord] = []
 
+    @Relationship(deleteRule: .cascade, inverse: \TextHighlightRecord.attachment)
+    var textHighlights: [TextHighlightRecord] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \RectangleMarkRecord.attachment)
+    var rectangleMarks: [RectangleMarkRecord] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \AnnotationCommentRecord.attachment)
+    var annotationComments: [AnnotationCommentRecord] = []
+
     init(
         id: UUID = UUID(),
         fileName: String,

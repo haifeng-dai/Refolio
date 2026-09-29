@@ -1,7 +1,6 @@
 import Foundation
 
-/// Reusable create pipeline: dedup → normalize → persist.
-/// Shared by manual entry and future DOI import.
+/// Shared create/update pipeline: dedup → normalize → persist.
 @MainActor
 struct ItemCreateOperation {
     private let repository: any ItemRepository
@@ -47,9 +46,9 @@ struct ItemCreateOperation {
             issue: draft.issue?.trimmedOrNil,
             pageRange: draft.pageRange?.trimmedOrNil,
             urlString: draft.urlString?.trimmedOrNil,
-            authorNames: draft.authorNames.compactMap(\.trimmedOrNil),
             publicationTitle: draft.publicationTitle?.trimmedOrNil,
-            literatureType: draft.literatureType?.trimmedOrNil
+            literatureType: draft.literatureType?.trimmedOrNil,
+            authors: draft.authors.compactMap { $0.normalized() }
         )
     }
 

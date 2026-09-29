@@ -17,6 +17,9 @@ struct RefolioApp: App {
                 Authorship.self,
                 Attachment.self,
                 LiteratureNoteRecord.self,
+                TextHighlightRecord.self,
+                RectangleMarkRecord.self,
+                AnnotationCommentRecord.self,
                 Folder.self,
                 FolderMembership.self
             )

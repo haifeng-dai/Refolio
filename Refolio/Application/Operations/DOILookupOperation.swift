@@ -11,6 +11,11 @@ struct DOILookupOperation {
     }
 
     func execute(rawDOI: String) async throws -> ItemDraft {
+        let metadata = try await executeMetadata(rawDOI: rawDOI)
+        return Self.draft(from: metadata, fallbackDOI: metadata.doi)
+    }
+
+    func executeMetadata(rawDOI: String) async throws -> DOIMetadata {
         guard let doi = DOIString.normalize(rawDOI) else {
             throw BibliographyClientError.invalidDOI
         }
@@ -22,23 +27,26 @@ struct DOILookupOperation {
         } catch {
             throw BibliographyClientError.network
         }
-        return Self.draft(from: envelope.message, fallbackDOI: doi)
+        return Self.metadata(from: envelope.message, fallbackDOI: doi)
     }
 
-    static func draft(from message: CrossrefWorkMessage, fallbackDOI: String) -> ItemDraft {
-        let title = message.title?.first?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    static func metadata(from message: CrossrefWorkMessage, fallbackDOI: String) -> DOIMetadata {
+        let title = message.title?.first?.trimmedOrNil
 
-        let authors: [String] = (message.author ?? []).map { author in
-            if let family = author.family?.trimmedOrNil {
-                if let given = author.given?.trimmedOrNil {
-                    return "\(family), \(given)"
-                }
-                return family
+        let authors: [DOIAuthor]? = message.author?.compactMap { author in
+            let givenName = author.given?.trimmedOrNil
+            let familyName = author.family?.trimmedOrNil
+            let literalName = author.name?.trimmedOrNil
+            guard givenName != nil || familyName != nil || literalName != nil else {
+                return nil
             }
-            return author.name?.trimmedOrNil ?? ""
+            return DOIAuthor(
+                givenName: givenName,
+                familyName: familyName,
+                literalName: literalName,
+                orcid: author.ORCID?.trimmedOrNil
+            )
         }
-        .filter { !$0.isEmpty }
 
         let dateParts = message.issued?.dateParts?.first ?? []
         let year = dateParts.count > 0 ? dateParts[0] : nil
@@ -52,20 +60,45 @@ struct DOILookupOperation {
 
         let doi = message.DOI.flatMap(DOIString.normalize) ?? fallbackDOI
 
-        return ItemDraft(
-            title: title ?? "",
-            abstract: message.abstract.map(Self.strippingMarkup),
+        return DOIMetadata(
             doi: doi,
+            title: title,
+            abstract: message.abstract.flatMap { Self.strippingMarkup($0).trimmedOrNil },
             publicationYear: year,
             publicationMonth: month,
             publicationDay: day,
             volume: message.volume?.trimmedOrNil,
             issue: message.issue?.trimmedOrNil,
             pageRange: message.page?.trimmedOrNil,
-            urlString: message.URL?.trimmedOrNil ?? "https://doi.org/\(doi)",
-            authorNames: authors,
+            urlString: message.URL?.trimmedOrNil,
+            authors: authors,
             publicationTitle: publicationTitle,
             literatureType: literatureType
+        )
+    }
+
+    static func draft(from metadata: DOIMetadata, fallbackDOI: String) -> ItemDraft {
+        ItemDraft(
+            title: metadata.title ?? "",
+            abstract: metadata.abstract,
+            doi: metadata.doi.isEmpty ? fallbackDOI : metadata.doi,
+            publicationYear: metadata.publicationYear,
+            publicationMonth: metadata.publicationMonth,
+            publicationDay: metadata.publicationDay,
+            volume: metadata.volume,
+            issue: metadata.issue,
+            pageRange: metadata.pageRange,
+            urlString: metadata.urlString ?? "https://doi.org/\(metadata.doi)",
+            publicationTitle: metadata.publicationTitle,
+            literatureType: metadata.literatureType,
+            authors: metadata.authors?.map {
+                AuthorDraft(
+                    givenName: $0.givenName,
+                    familyName: $0.familyName,
+                    literalName: $0.literalName,
+                    orcid: $0.orcid
+                )
+            } ?? []
         )
     }
 
