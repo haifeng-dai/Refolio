@@ -26,14 +26,4 @@ final class Author {
         self.orcid = orcid
     }
 
-    var displayName: String {
-        if let literalName, !literalName.isEmpty {
-            return literalName
-        }
-
-        return [givenName, familyName]
-            .compactMap { $0 }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
 }
