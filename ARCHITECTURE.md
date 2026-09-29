@@ -4,7 +4,7 @@
 
 ## 一、整体设计
 
-Refolio 是原生 macOS 文献管理应用。当前已实现本地文献、文件夹、回收站、附件导入、PDF 应用内阅读、文献笔记和 DOI 在线获取；按附件恢复精确阅读位置已运行验收，笔记界面代码已接入、待运行验收。
+Refolio 是原生 macOS 文献管理应用。当前已实现本地文献、文件夹、回收站、附件导入、PDF 应用内阅读、多文档阅读标签页、文献笔记、DOI 查询与更新、可配置翻译引擎和 PDF 标注；按附件恢复精确阅读位置已运行验收，标注、笔记和翻译仍需以真实文库继续运行验收。
 
 项目目前只有一个 Xcode App target。代码在 UI 侧按功能组织，在其余部分按职责组织。需要新的真实功能时再增加文件或目录，不预建空模块。
 
@@ -46,8 +46,11 @@ flowchart LR
 | 手动填写 DOI 字符串、通过 DOI 获取元数据 | 已实现；通过 Crossref 查询并进入通用文献编辑窗口 |
 | 导入文献附件 | 已实现；支持各类文件，保存在应用管理的本地目录 |
 | 打开附件 | 已实现；PDF 在独立窗口内用 PDFKit 打开，其他文件交给系统打开 |
+| 多文档 PDF 阅读 | 已实现；阅读器维护打开文档集合，可切换和关闭标签页 |
 | 按附件记住 PDF 精确阅读位置 | 已实现并运行验收 |
 | 文献笔记 | 代码已接入；详情栏和 PDF 阅读器共用，待运行验收 |
+| PDF 文本高亮与框选标注 | 代码已接入；高亮从划词浮窗创建，框选在 PDF 页面拖出矩形，几何和附加评论保存到 SwiftData，重新打开时由 PDFKit 叠加显示；不改写 PDF 文件，待运行验收 |
+| PDF 翻译 | 已实现；通过统一的引擎协议和注册目录选择服务，支持选中文字自动翻译、缓存和高亮 |
 | 删除或重命名文件夹、永久删除文献 | 未实现 |
 
 ## 二、目录及职责
@@ -57,17 +60,24 @@ flowchart LR
 ```text
 Refolio/
 ├── App/
-│   └── RefolioApp.swift
+│   ├── RefolioApp.swift
+│   └── MainWorkspaceView.swift
 ├── Features/Library/
 │   ├── UI/
 │   │   ├── LibraryView.swift
 │   │   ├── ItemEditorView.swift
+│   │   ├── DOIUpdateComparisonView.swift
 │   │   ├── NewFolderView.swift
 │   │   └── ItemDetailView.swift
 │   └── State/
 │       └── LibraryViewModel.swift
-├── Features/Reader/UI/
-│   └── PDFReaderView.swift
+├── Features/Reader/
+│   ├── State/
+│   │   └── TranslationViewModel.swift
+│   └── UI/
+│       ├── PDFReaderView.swift
+│       ├── SafariCapsuleTabBar.swift
+│       └── TranslationView.swift
 ├── Features/Notes/UI/
 │   └── LiteratureNotesView.swift
 ├── Application/
@@ -76,11 +86,15 @@ Refolio/
 │   └── Operations/
 │       ├── ItemCreateOperation.swift
 │       ├── AttachImportOperation.swift
+│       ├── DOILookupOperation.swift
+│       ├── DOIUpdateOperation.swift
 │       └── ItemDraftSupport.swift
 ├── Domain/
 │   ├── Models/
 │   │   ├── ItemDraft.swift
 │   │   ├── LiteratureNote.swift
+│   │   ├── TextHighlight.swift
+│   │   ├── DOIUpdate.swift
 │   │   └── DOIString.swift
 │   └── Repositories/ItemRepository.swift
 ├── Data/
@@ -96,7 +110,10 @@ Refolio/
 │   │       ├── Folder.swift
 │   │       ├── FolderMembership.swift
 │   │       ├── Attachment.swift
-│   │       └── LiteratureNoteRecord.swift
+│   │       ├── LiteratureNoteRecord.swift
+│   │       ├── TextHighlightRecord.swift
+│   │       ├── RectangleMarkRecord.swift
+│   │       └── AnnotationCommentRecord.swift
 │   └── Repositories/
 │       └── SwiftDataItemRepository.swift
 └── Resources/Assets.xcassets/
@@ -126,7 +143,7 @@ Refolio/
 
 ## 三、启动、装配和线程
 
-`RefolioApp.init()` 创建 `ModelContainer`，注册八种 SwiftData 模型：`Item`、`Publication`、`Author`、`Authorship`、`Attachment`、`LiteratureNoteRecord`、`Folder`、`FolderMembership`。随后用 `container.mainContext` 创建 `SwiftDataItemRepository`，再创建 `ItemLibraryWorkflow`、`LocalAttachmentFileStore` 和 `LibraryViewModel`。主 `WindowGroup` 呈现 `LibraryView`；另一个数据驱动的 `WindowGroup` 呈现 PDF 阅读窗口，两者共享视图模型。
+`RefolioApp.init()` 创建 `ModelContainer`，注册十一种 SwiftData 模型：`Item`、`Publication`、`Author`、`Authorship`、`Attachment`、`LiteratureNoteRecord`、`TextHighlightRecord`、`RectangleMarkRecord`、`AnnotationCommentRecord`、`Folder`、`FolderMembership`。随后用 `container.mainContext` 创建 `SwiftDataItemRepository`，再创建 `ItemLibraryWorkflow`、`LocalAttachmentFileStore` 和 `LibraryViewModel`。主 `WindowGroup` 呈现 `LibraryView`；另一个数据驱动的 `WindowGroup` 呈现 PDF 阅读窗口，两者共享视图模型。
 
 Debug 构建调用 `DebugSampleData.seedIfNeeded`：仅当 `Item` 表为空时插入三篇示例文献和一个示例文件夹，前两篇属于该文件夹。已有文献时不会再次播种。当前容器或示例数据初始化失败会 `fatalError`。
 
@@ -140,12 +157,15 @@ Debug 构建调用 `DebugSampleData.seedIfNeeded`：仅当 `Item` 表为空时�
 | --- | --- | --- |
 | `Item` | 一篇文献的主记录 | UUID、标题、摘要、DOI、发表日期、卷期页、URL、创建/修改时间、`isTrashed`；关联期刊、作者关系、文件夹关系、附件和笔记 |
 | `Publication` | 发表载体 | 名称、`literatureType`，另有缩写、出版者、ISSN、ISBN 和 URL 字段；可被多篇文献引用 |
-| `Author` | 可复用的作者实体 | 姓名组成或字面姓名、ORCID；`displayName` 用于显示和当前匹配 |
+| `Author` | 可复用的作者姓名记录 | `givenName`、`familyName`、`literalName` 和可选 ORCID；同一自然人的不同姓名表现可以是不同记录 |
 | `Authorship` | 文献与作者的关联记录 | `item`、`author`、作者顺序 `position`、可选 `role` |
 | `Folder` | 集合式文件夹 | UUID、名称、创建时间及成员关系 |
 | `FolderMembership` | 文献与文件夹的关联记录 | `item`、`folder`、加入时间 |
-| `Attachment` | 属于文献的文件记录 | 文件名、类型、大小、导入时间、最后阅读位置（页码、页内坐标、缩放值）、受管理相对路径或安全作用域书签、`item`；可被笔记作为来源 |
+| `Attachment` | 属于文献的文件记录 | 文件名、类型、大小、导入时间、最后阅读位置（页码、页内坐标、缩放值）、受管理相对路径或安全作用域书签、`item`；可被笔记作为来源并关联多条文本高亮 |
 | `LiteratureNoteRecord` | 一条独立的文献笔记 | UUID、纯文本、创建/更新时间、`item`；可选来源附件和零基来源页码 |
+| `TextHighlightRecord` | 一次 PDF 文本高亮 | UUID、选中文字、创建时间、颜色和按页保存的 PDF 页面矩形；关联一个附件 |
+| `RectangleMarkRecord` | 一次 PDF 框选标注 | UUID、零基页码、页面矩形和创建时间；关联一个附件 |
+| `AnnotationCommentRecord` | 标注附加的文字评论 | UUID、目标标注 UUID、正文和创建/更新时间；关联一个附件 |
 
 ```text
 Publication 1 ── 0..n Item
@@ -155,17 +175,20 @@ Publication 1 ── 0..n Item
                       ├── 0..n Attachment
                       └── 0..n LiteratureNoteRecord
 Attachment 0..n ── 0..1 LiteratureNoteRecord（sourceAttachment）
+Attachment 1 ── 0..n TextHighlightRecord
+Attachment 1 ── 0..n RectangleMarkRecord
+Attachment 1 ── 0..n AnnotationCommentRecord（annotationID 指向高亮或框选标注）
 ```
 
 一篇 `Item` 无需 PDF 也能存在，并可拥有多个 `Attachment`。`Item` 不重复保存文献类型，而是通过 `Publication.literatureType` 获得。作者是多对多关系，顺序存在关联记录中；文件夹也是多对多集合，一篇文献进入多个文件夹不会复制主记录。
 
-模型定义的删除规则是：删除 `Item` 时级联删除它的 `Authorship`、`FolderMembership`、`Attachment` 和 `LiteratureNoteRecord` **记录**；删除作为笔记来源的 `Attachment` 时，笔记保留且来源附件关系 nullify；删除 `Folder` 时级联删除成员关联；删除 `Author` 时级联删除作者关联；删除 `Publication` 时对 `Item` 的引用采用 nullify。这些规则不代表当前 UI 已提供永久删除操作，更不代表已经实现附件实体删除时的磁盘文件清理。
+模型定义的删除规则是：删除 `Item` 时级联删除它的 `Authorship`、`FolderMembership`、`Attachment` 和 `LiteratureNoteRecord` **记录**；删除 `Attachment` 时级联删除文本高亮、矩形框选和标注评论记录，删除作为笔记来源的附件时笔记保留且来源附件关系 nullify；删除 `Folder` 时级联删除成员关联；删除 `Author` 时级联删除作者关联；删除 `Publication` 时对 `Item` 的引用采用 nullify。这些规则不代表当前 UI 已提供永久删除操作，更不代表已经实现附件实体删除时的磁盘文件清理。
 
 回收站目前只修改 `Item.isTrashed`。文献主记录与它的关联仍在数据库内；恢复操作把布尔值改回 `false`。当前没有彻底删除文献的仓储方法或 UI 入口。
 
 ### 跨层数据类型
 
-`ItemDraft` 是新增和编辑的输入：包含可编辑的文献元数据与有序作者姓名，不包含 SwiftData 对象。`LibraryItem` 是给 UI 使用的只读文献快照，包含展示字段、作者姓名、文件夹 ID 和回收站状态；当前不含附件或阅读状态。`LibraryFolder` 包含 ID、名称和文献计数。`FolderSelection` 表示全部文献、未归档、回收站或指定文件夹。
+`ItemDraft` 是新增和编辑的输入：包含可编辑的文献元数据与有序结构化作者记录，不包含 SwiftData 对象。`LibraryItem` 是给 UI 使用的只读文献快照，包含展示字段、结构化作者记录、文件夹 ID 和回收站状态；当前不含附件或阅读状态。`LibraryFolder` 包含 ID、名称和文献计数。`FolderSelection` 表示全部文献、未归档、回收站或指定文件夹。
 
 `LiteratureNoteDraft` 是笔记新增输入；`LiteratureNote` 是给 UI 的笔记快照，包含文献 ID、正文、时间以及可选的来源文件名和零基页码。正文编辑只提交内容，保留已有来源关系。
 
@@ -173,40 +196,45 @@ UI 不直接持有可变 `Item`。编辑时用 `LibraryItem` 预填表单，再�
 
 ### 当前匹配与更新语义
 
-- 创建文献时，仓储按作者展示名匹配已有 `Author`，比较忽略大小写和变音符号；找不到就新建使用 `literalName` 的作者。输入顺序写入 `Authorship.position`。
+- 创建文献时，仓储按 `givenName`、`familyName`、`literalName` 匹配已有作者姓名记录，比较时忽略大小写和变音符号但保留标点差异；ORCID 只用于兼容性保护，不作为姓名表现匹配键。姓名表现不同或 ORCID 状态冲突时新建 `Author`，输入顺序写入 `Authorship.position`。
 - `Publication` 根据名称（比较忽略大小写和变音符号）以及精确的 `literatureType` 复用或创建；没有发表载体名称时，文献的关联为 `nil`。
-- 编辑文献时，仓储修改文献的标量字段及 `publication` 引用。有序作者姓名未变时保留原 `Authorship`；变化时只重建这篇文献的 `Authorship`，不删除共享的 `Author`。文献 ID、创建时间、回收站状态、附件和文件夹关系不变。
+- 编辑文献时，仓储修改文献的标量字段及 `publication` 引用。作者列表始终按合并逻辑处理：未变化的 `Authorship` 保留，新增作者只创建或复用 `Author` 并插入新关联，姓名表现变化会创建新的作者姓名记录，被移除的作者只删除该文献的关联，顺序变化只更新对应 `position`；共享的 `Author` 不删除，已有作者记录的字段不被 DOI 覆写。文献 ID、创建时间、回收站状态、附件和文件夹关系不变。
 - `Authorship.role` 是当前未使用的可选字段；现有创建和编辑表单不输入它，新增关联时它为 `nil`。
 - 同名文件夹在仓储中被复用，名称比较忽略大小写和变音符号。同一文献重复加入同一文件夹时，仓储不插入第二条关联。
 
-当前创建/编辑会在 `ItemCreateOperation` 中做 DOI 归一化与未回收站查重（`ItemRepository.findNonTrashed(doi:)`），重复 DOI 拒绝写入并由 UI 警告；尚未做标题相似去重。按姓名复用作者是现有规则，不能据此认定同名作者必然是同一人。
+当前创建/编辑会在 `ItemCreateOperation` 中做 DOI 归一化与未回收站查重（`ItemRepository.findNonTrashed(doi:)`），重复 DOI 拒绝写入并由 UI 警告；尚未做标题相似去重。没有 ORCID 的完全相同姓名表现可以复用作者姓名记录，但这不代表已经确认了自然人身份。
 
 ## 五、界面结构与状态
 
 `LibraryView` 使用两列 `NavigationSplitView`：左侧是 Library/文件夹导航，主内容是文献列表；文献资料通过附着在列表上的原生 `inspector` 呈现。左侧工具栏有新增文件夹；主内容工具栏有 `+` 菜单，其“Add Manually”打开通用文献编辑表单，“Add by DOI…”先查询 DOI，再打开同一个编辑表单，另有原生搜索项。
 
-UI 宽度常量集中在 `LibraryView.swift` 顶部：侧栏最小 180、最大 340；inspector 最小 180、理想 260、最大 300。窗口最小尺寸为 900 × 600。它们属于 UI 布局，不进入工作流或仓储。
+UI 宽度常量集中在 `LibraryView.swift` 和 `PDFReaderView.swift`：文献管理器侧栏为 260/280/400，内容列最小 280、理想 360，详情栏为 200/300/600；阅读器侧栏为 260/280/400，内容列最小 280、理想 600，工具栏为 200/300/750。窗口最小尺寸为 900 × 600。它们属于 UI 布局，不进入工作流或仓储。
 
 | 状态 | 所有者 | 意义 |
 | --- | --- | --- |
 | `items`、`folders` | `LibraryViewModel` | 最近一次载入的文献和文件夹快照 |
 | `notesByItemID` | `LibraryViewModel` | 以文献 ID 为键的笔记快照；两个窗口共用 |
-| `columnVisibility`、`isToolsPresented` | `PDFReaderView` | 阅读器左侧栏和右侧工具栏的显示状态 |
+| `workspaceMode` | `LibraryViewModel` | 主工作区在文献管理器和阅读器之间的切换 |
+| `openDocuments`、`activeDocumentAttachmentID` | `LibraryViewModel` | 已打开的 PDF 标签页及当前标签页 |
+| `selectedItemIDs`、`focusedItemID` | `LibraryViewModel` | 文献列表的多选集合和当前焦点文献 |
+| `attachmentFilter` | `LibraryViewModel` | 是否只显示有主文件或缺少主文件的文献 |
+| `columnVisibility`、`splitViewState` | `LibraryView`、`PDFReaderView` | 三列布局的列可见性、工具栏折叠状态和拖动后的宽度 |
 | `selectedTool` | `PDFReaderView` | 右侧当前选中的阅读工具 |
 | `currentPageIndex` | `PDFReaderView` | 阅读器新笔记的来源页码 |
+| `highlightRestoreError` | `PDFReaderView` | 恢复数据库高亮失败时的提示 |
 | `isEditorPresented`、`editingNote`、`draft` | `LiteratureNotesView` | 笔记编辑表单的临时界面状态，不跨窗口共享 |
 | `searchText`、`selectedFolder` | `LibraryViewModel` | 当前搜索词和导航范围 |
 | `loadError` | `LibraryViewModel` | 读取失败信息 |
-| `selectedItemID` | `LibraryView` | 列表选中项与详情显示依据 |
+| `focusedItemID` | `LibraryViewModel` | 列表多选中的焦点文献与详情显示依据 |
 | `editingItem` | `LibraryView` | 正在编辑的文献快照 |
 | `showingNewItem`、`showingNewFolder` | `LibraryView` | 表单呈现状态 |
-| `isInspectorPresented` | `LibraryView` | 详情栏呈现状态，初始为 `true` |
+| `selectedSidebarTab` | `PDFReaderView` | Pages、Outline 和 Annot. 三个左侧标签页 |
 | `actionError` | `LibraryView` | 列表右键操作错误 |
 | 输入字段和 `errorMessage` | 两个表单视图 | 尚未提交的输入及表单内错误 |
 
 `LibraryViewModel.filteredItems` 先按 `FolderSelection` 筛选：全部文献和普通文件夹排除回收站记录；未归档要求无文件夹关系；回收站只取被标记的记录。随后在已加载的数组中，用去首尾空白的搜索词匹配标题、DOI、发表载体名称和作者姓名。当前搜索不是数据库全文检索，也不匹配摘要或 URL。
 
-详情按 `selectedItemID` 在**当前筛选结果**里查文献；筛选后不可见则显示占位内容。`ItemDetailView` 展示标题、作者、发表载体、类型、日期、DOI、页码、摘要、URL 和笔记。`Item` 虽存有卷和期，当前详情视图尚未展示它们。PDF 阅读器以 `NavigationSplitView` 呈现左侧页面缩略图入口和中间 PDFKit 画布，右侧原生 inspector 提供笔记、注释、翻译和 AI 对话入口；目前只有笔记可用。
+详情按 `focusedItemID` 在**当前筛选结果**里查文献；筛选后不可见则调整导航范围或显示占位内容。`ItemDetailView` 展示标题、作者、发表载体、类型、日期、DOI、页码、摘要、URL 和笔记。`Item` 虽存有卷和期，当前详情视图尚未展示它们。PDF 阅读器以 `NavigationSplitView` 呈现左侧缩略图、目录和注释列表，中间是 PDFKit 画布，右侧 inspector 提供笔记、翻译和 AI 对话入口；高亮可从选中文字后的翻译浮窗创建，标签栏负责多个打开文档的切换和关闭。
 
 ## 六、实际操作链路
 
@@ -217,12 +245,12 @@ flowchart LR
     A[手动新增文献] --> V1[viewModel.createItem]
     B[右键编辑文献] --> V2[viewModel.updateItem]
     C[新建文件夹] --> V3[viewModel.createFolder]
-    D[加入文件夹] --> V4[viewModel.addItem]
+    D[加入文件夹] --> V4[viewModel.addItems]
     E[移入回收站或恢复] --> V5[viewModel.moveToTrash / restore]
     V1 --> W1[workflow.createItem]
     V2 --> W2[workflow.updateItem]
     V3 --> W3[workflow.createFolder]
-    V4 --> W4[workflow.addItem]
+    V4 --> W4[workflow.addItems]
     V5 --> W5[workflow.moveToTrash / restore]
     W1 --> R1[repository.create]
     W2 --> R2[repository.update]
@@ -314,11 +342,13 @@ sequenceDiagram
     WF->>Repo: update(_:from:)，经 ItemRepository 接口
     Repo->>DB: 按 itemID 找到原 Item
     Repo->>DB: 更新字段；查找或创建并关联 Publication
-    alt 有序作者姓名未变化
+    alt 有序作者表现未变化
         Repo->>Repo: 保留原 Authorship
-    else 有序作者姓名变化
-        Repo->>DB: 删除该 Item 的旧 Authorship
-        Repo->>DB: 查找或创建 Author；按新顺序插入 Authorship
+    else 有序作者表现变化
+        Repo->>Repo: 按姓名表现和兼容 ORCID 解析 Author
+        Repo->>DB: 保留未变化关系；只更新变化关系的 position
+        Repo->>DB: 查找或创建作者姓名记录，并插入 Authorship
+        Repo->>DB: 删除本次列表中已移除的 Authorship
     end
     Repo->>DB: 更新时间并 save()
     Repo-->>WF: 完成或抛出错误
@@ -336,7 +366,7 @@ sequenceDiagram
 | 用户动作 | 调用方向 | 持久化结果 |
 | --- | --- | --- |
 | 新增文件夹 | 表单 → `viewModel.createFolder` → workflow → repository | 复用同名文件夹或插入 `Folder`；视图模型选中它 |
-| 加入文件夹 | 行菜单 → `viewModel.addItem` → workflow → repository | 插入不存在的 `FolderMembership` |
+| 加入文件夹 | 行菜单 → `viewModel.addItems` → workflow → repository | 对选中文献逐一插入不存在的 `FolderMembership` |
 | 移入回收站 | 行菜单 → `viewModel.moveToTrash` → workflow → repository | `isTrashed = true`，更新时间 |
 | 恢复文献 | 回收站行菜单 → `viewModel.restore` → workflow → repository | `isTrashed = false`，更新时间 |
 | 新建、编辑或删除笔记 | `LiteratureNotesView` → `viewModel` → workflow → repository | 保存单条笔记；共享缓存让详情栏与 PDF 窗口同步 |
@@ -346,6 +376,10 @@ sequenceDiagram
 ### PDF 阅读位置
 
 PDF 阅读请求携带文献 ID 和附件 ID。工作流确认附件属于该文献、判断文件类型并解析本地路径；阅读界面用 PDFKit 显示文件。PDFView 完成窗口布局后，阅读界面才执行初始定位。滚动视图边界、页码或缩放变化后，阅读界面等待滚动停止，读取 PDFView 的当前页面、页面坐标和缩放值，将零基页索引及位置交给视图模型，由工作流校验后交给仓储保存到对应附件。重开时，PDFView 用 PDFDestination 恢复页内坐标和缩放；旧记录只有页码时仍跳到该页，没有保存记录时从第一页开始，越界页码限制在文档页数范围内。
+
+### 多文档阅读
+
+`LibraryViewModel.openDocuments` 保存当前会话中已经打开的 PDF 请求，`activeDocumentAttachmentID` 标记当前标签页。打开相同附件不会重复创建请求；切换标签页只更新活动附件，关闭活动标签页后选择相邻标签页，关闭最后一个标签页则回到文献管理器。`MainWorkspaceView` 根据 `workspaceMode` 呈现文献管理器或当前阅读器，`SafariCapsuleTabBar` 只负责标签页展示和操作转发。
 
 ```mermaid
 sequenceDiagram
@@ -389,15 +423,27 @@ sequenceDiagram
 
 ### 错误传递
 
-工作流和仓储用 `throws` 向上传递错误。视图模型把写入错误转换为 `String?`：表单把错误显示在表单内部，成功时关闭；列表右键操作把错误放入 `LibraryView.actionError`，通过 alert 展示；阅读页保存失败由阅读窗口 alert 展示；笔记读写失败由笔记组件 alert 展示。载入错误保存在 `LibraryViewModel.loadError`，也通过主窗口 alert 展示。标题/日期/文件夹名称错误由工作流生成；年月日输入不是整数时由表单先提示。
+工作流和仓储用 `throws` 向上传递错误。视图模型把常见写入错误转换为 `String?`：表单把错误显示在表单内部，成功时关闭；列表右键操作把错误放入 `LibraryView.actionError`，通过 alert 展示；阅读页保存失败由阅读窗口 alert 展示；笔记读写失败由笔记组件 alert 展示。高亮创建错误显示在划词浮窗，恢复错误由阅读窗口 alert 展示。载入错误保存在 `LibraryViewModel.loadError`，也通过主窗口 alert 展示。标题/日期/文件夹名称错误由工作流生成；年月日输入不是整数时由表单先提示。
 
 ## 七、近期功能边界与未实现位置
+
+### PDF 文本高亮
+
+在 PDF 中选中文字后，可从翻译浮窗创建高亮；阅读器工具栏或注释列表的右键菜单可进入框选模式，在页面拖出只有边框的矩形标注。实现只处理 PDFKit 能提供原生文字范围和字符边界的 PDF，不做 OCR；按 PDFKit 的逐行选区读取每个字符的页面坐标，再合并相邻字符矩形，避免用整段选区的外接矩形覆盖行间空白。跨页选区作为一条 `TextHighlightRecord` 保存，几何按零基页码和 PDF 页面坐标编码到 SwiftData。
+
+打开附件时，阅读器从该附件载入记录，并在内存中的 `PDFDocument` 上添加 PDFKit highlight 或 square 注释。应用不会调用 PDF 写入接口，原 PDF 文件保持不变。左侧注释列表支持跳转；对高亮或框选标注右键可添加、修改或删除文字评论，删除标注时同步删除附加评论，也可以直接修改 Zotero 风格颜色。PDF 注释菜单通过 `NSMenu.allowsContextMenuPlugIns = false` 排除第三方 Context Menu Plug-in 项。运行时的选区效果、评论、颜色、菜单和恢复效果待验收。
+
+### 翻译引擎
+
+`TranslationEngine` 是统一的最小接口，只暴露引擎 ID、显示名称、是否需要 API Key 和 `translate` 方法。`TranslationEngineRegistry` 集中注册 Bing、CNKI、Google、Baidu、Youdao Zhiyun 和 NiuTrans；新增引擎只需实现协议并加入注册目录，不把供应商字段扩散到公共接口。当前默认引擎为 Bing。
+
+翻译设置保存在右侧工具栏：用户可以切换引擎和目标语言，启用或关闭划词自动翻译，清空内存缓存，或为需要认证的引擎配置 Key。Baidu、Youdao Zhiyun 和 NiuTrans 的凭据通过 macOS Keychain 读取；选中的引擎 ID 通过 `UserDefaults` 保存。翻译缓存按引擎、目标语言和规范化原文区分；切换选中文字时只清空弹窗当前译文，不删除缓存。
 
 ### 文献笔记
 
 每条笔记是独立的 `LiteratureNoteRecord`，文献删除时级联删除。详情栏与 PDF 阅读器都使用 `LiteratureNotesView`，经同一个 `LibraryViewModel` 共享按文献 ID 缓存；新增、编辑和删除由 `ItemLibraryWorkflow` 校验并交给一次仓储操作。正文是纯文本，没有单独标题；列表按更新时间排序。
 
-在阅读器新增笔记时，记录当前附件和零基页码，界面显示一基页码。这个来源只标记笔记来自哪里，不是 PDF 高亮、批注或选中文本。编辑正文保留原来源；来源附件关系被删除时关系 nullify，笔记正文继续保留。阅读器的左侧栏目前预留缩略图位置；右侧工具面板中，笔记可用，注释、翻译和 AI 对话显示占位入口。实际缩略图与其余工具行为尚未实现；笔记界面代码已接入，两个窗口的实际读写和来源页码仍待运行验收。
+在阅读器新增笔记时，记录当前附件和零基页码，界面显示一基页码。这个来源只标记笔记来自哪里，不是 PDF 高亮、批注或选中文本。编辑正文保留原来源；来源附件关系被删除时关系 nullify，笔记正文继续保留。PDF 阅读器左栏显示缩略图和 PDF 自带注释；右侧提供笔记和翻译，AI 对话仍是占位入口。笔记和高亮的实际读写与页面效果待运行验收。
 
 ```mermaid
 sequenceDiagram
@@ -422,6 +468,12 @@ sequenceDiagram
 ### DOI 在线获取
 
 已实现「Add by DOI…」：`DoiLookupView` 粘贴 DOI → `ItemLibraryWorkflow.lookupDOI` → `DOILookupOperation` → `CrossrefClient` → 映射为 `ItemDraft` → 关闭查询窗口并预填 `ItemEditorView` → 用户确认后走 `ItemCreateOperation` 入库到当前文件夹（含 DOI 查重）。HTTP 与 JSON 解码在 `Integrations`，不依赖 Domain；DTO→ItemDraft 映射只在 Application。尚未做标题相似去重、多数据源与 PDF 内嵌 DOI 提取。
+
+### DOI 更新
+
+文献右键菜单的「Update by DOI…」只使用该文献已有 DOI；没有有效 DOI 时直接显示错误，不发起网络请求。查询窗口复用 `DoiLookupView` 的样式，但 DOI 输入只读。查询成功后，`DOIMetadata` 与当前 `LibraryItem` 进入 `DOIUpdateComparisonView`，用户逐字段选择保留本地或使用远程值。标题、摘要、日期、卷、期、页码、URL、作者和发表载体都作为普通对比字段；没有远程值的字段保留本地。完全相同则只显示提示，不执行保存。
+
+保存时，UI 只提交 `DOIUpdatePlan` 给 `LibraryViewModel`。`ItemLibraryWorkflow` 让 `DOIUpdateOperation` 把用户选择的远程字段合并为完整 `ItemDraft`，再复用 `ItemCreateOperation.executeUpdate` → `ItemRepository.update` 的普通编辑链路；因此 DOI 更新和手动编辑共享标题必填、日期校验、DOI 查重、字段归一化、发表载体解析、作者关联合并和一次持久化。DOI 查询与对比仍属于 DOI 专用流程，不能绕过普通更新入口。作者列表采用结构化姓名表现进行比较：保留未变化关系及其 `Authorship.role`，姓名表现变化或 ORCID 状态冲突时创建新的 `Author`，新增关系的 `role` 为空，顺序变化只更新 `position`。已有作者记录不会被 DOI 覆写。附件、文件夹、笔记、阅读位置、文献 ID 和创建时间不变。
 
 ## 八、扩展时保持的边界
 
