@@ -24,7 +24,8 @@ final class LibraryViewModel {
     var workspaceMode: MainWorkspaceMode = .library
     var openDocuments: [PDFReaderRequest] = []
     var activeDocumentAttachmentID: UUID?
-    var selectedItemID: UUID?
+    var selectedItemIDs: Set<UUID> = []
+    var focusedItemID: UUID?
 
     var activeReaderRequest: PDFReaderRequest? {
         guard let activeID = activeDocumentAttachmentID else {
@@ -72,13 +73,78 @@ final class LibraryViewModel {
 
     func switchToReader() {
         if openDocuments.isEmpty,
-           let selectedID = selectedItemID,
+           selectedItemIDs.count == 1,
+           let selectedID = focusedItemID,
            let selected = items.first(where: { $0.id == selectedID }),
            let mainAttachment = selected.attachments.first(where: { $0.role == .main }) {
             openInReader(itemID: selected.id, attachmentID: mainAttachment.id)
         } else {
             workspaceMode = .reader
         }
+    }
+
+    func updateSelectedItemIDs(_ itemIDs: Set<UUID>) {
+        let visibleItems = filteredItems
+        let visibleItemIDs = Set(visibleItems.map(\.id))
+        let selection = itemIDs.intersection(visibleItemIDs)
+        let newlySelectedIDs = selection.subtracting(selectedItemIDs)
+
+        selectedItemIDs = selection
+
+        if let newlyFocusedItem = visibleItems.last(where: { newlySelectedIDs.contains($0.id) }) {
+            focusedItemID = newlyFocusedItem.id
+        } else if let focusedItemID, !selection.contains(focusedItemID) {
+            self.focusedItemID = visibleItems.first(where: { selection.contains($0.id) })?.id
+        }
+    }
+
+    func reconcileSelection(visibleItemIDs: [UUID]) {
+        let visibleIDs = Set(visibleItemIDs)
+        let selection = selectedItemIDs.intersection(visibleIDs)
+
+        if !selection.isEmpty {
+            selectedItemIDs = selection
+            if let focusedItemID, !selection.contains(focusedItemID) {
+                self.focusedItemID = visibleItemIDs.first(where: { selection.contains($0) })
+            }
+            return
+        }
+
+        if let firstVisibleItemID = visibleItemIDs.first {
+            selectedItemIDs = [firstVisibleItemID]
+            focusedItemID = firstVisibleItemID
+        } else {
+            selectedItemIDs = []
+            focusedItemID = nil
+        }
+    }
+
+    func selectOnlyItem(_ itemID: UUID?) {
+        selectedItemIDs = itemID.map { [$0] } ?? []
+        focusedItemID = itemID
+    }
+
+    func focusItem(_ itemID: UUID) {
+        if !selectedItemIDs.contains(itemID) {
+            selectedItemIDs = [itemID]
+        }
+        focusedItemID = itemID
+    }
+
+    func showItemInLibrary(_ itemID: UUID) {
+        guard let item = items.first(where: { $0.id == itemID }) else {
+            selectOnlyItem(nil)
+            workspaceMode = .library
+            return
+        }
+
+        if !filteredItems.contains(where: { $0.id == itemID }) {
+            selectedFolder = item.isTrashed ? .trash : .allItems
+            attachmentFilter = .all
+            searchText = ""
+        }
+        selectOnlyItem(itemID)
+        workspaceMode = .library
     }
 
     init(workflow: ItemLibraryWorkflow) {
@@ -143,6 +209,36 @@ final class LibraryViewModel {
         }
     }
 
+    func lookupDOIMetadata(_ rawDOI: String) async -> Result<DOIMetadata, Error> {
+        do {
+            let metadata = try await workflow.lookupDOIMetadata(rawDOI)
+            return .success(metadata)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    func prepareDOIUpdate(
+        for item: LibraryItem,
+        remote: DOIMetadata
+    ) -> Result<DOIUpdatePreview, Error> {
+        do {
+            return .success(try workflow.prepareDOIUpdate(for: item, remote: remote))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    func applyDOIUpdate(_ plan: DOIUpdatePlan) -> String? {
+        do {
+            try workflow.updateItemByDOI(plan)
+            load()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     func createItem(_ draft: ItemDraft) -> String? {
         do {
             let folderID: UUID?
@@ -180,9 +276,9 @@ final class LibraryViewModel {
         }
     }
 
-    func addItem(_ item: LibraryItem, to folder: LibraryFolder) -> String? {
+    func addItems(_ itemIDs: Set<UUID>, to folder: LibraryFolder) -> String? {
         do {
-            try workflow.addItem(item.id, to: folder.id)
+            try workflow.addItems(itemIDs, to: folder.id)
             load()
             return nil
         } catch {
@@ -273,6 +369,153 @@ final class LibraryViewModel {
         do {
             try workflow.deleteNote(noteID, in: itemID)
             notesByItemID[itemID]?.removeAll { $0.id == noteID }
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func textHighlights(for attachmentID: UUID, in itemID: UUID) throws -> [TextHighlight] {
+        try workflow.fetchTextHighlights(for: attachmentID, in: itemID)
+    }
+
+    func createTextHighlight(_ draft: TextHighlightDraft, for attachmentID: UUID, in itemID: UUID) throws -> TextHighlight {
+        try workflow.createTextHighlight(draft, for: attachmentID, in: itemID)
+    }
+
+    func updateTextHighlightGeometry(
+        _ pages: [TextHighlightPage],
+        for highlightID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> TextHighlight {
+        try workflow.updateTextHighlightGeometry(
+            pages,
+            for: highlightID,
+            attachmentID: attachmentID,
+            in: itemID
+        )
+    }
+
+    func deleteTextHighlight(
+        _ highlightID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) -> String? {
+        do {
+            try workflow.deleteTextHighlight(highlightID, attachmentID: attachmentID, in: itemID)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func updateTextHighlightColor(
+        _ color: TextHighlightColor,
+        for highlightID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> TextHighlight {
+        try workflow.updateTextHighlightColor(
+            color,
+            for: highlightID,
+            attachmentID: attachmentID,
+            in: itemID
+        )
+    }
+
+    func rectangleMarks(for attachmentID: UUID, in itemID: UUID) throws -> [RectangleMark] {
+        try workflow.fetchRectangleMarks(for: attachmentID, in: itemID)
+    }
+
+    func createRectangleMark(
+        _ draft: RectangleMarkDraft,
+        for attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> RectangleMark {
+        try workflow.createRectangleMark(draft, for: attachmentID, in: itemID)
+    }
+
+    func deleteRectangleMark(
+        _ markID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) -> String? {
+        do {
+            try workflow.deleteRectangleMark(markID, attachmentID: attachmentID, in: itemID)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func updateRectangleMarkColor(
+        _ color: TextHighlightColor,
+        for markID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) throws -> RectangleMark {
+        try workflow.updateRectangleMarkColor(
+            color,
+            for: markID,
+            attachmentID: attachmentID,
+            in: itemID
+        )
+    }
+
+    func annotationComments(for attachmentID: UUID, in itemID: UUID) throws -> [AnnotationComment] {
+        try workflow.fetchAnnotationComments(for: attachmentID, in: itemID)
+    }
+
+    func createAnnotationComment(
+        _ draft: AnnotationCommentDraft,
+        for annotationID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) -> String? {
+        do {
+            _ = try workflow.createAnnotationComment(
+                draft,
+                for: annotationID,
+                attachmentID: attachmentID,
+                in: itemID
+            )
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func updateAnnotationComment(
+        _ commentID: UUID,
+        content: String,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) -> String? {
+        do {
+            _ = try workflow.updateAnnotationComment(
+                commentID,
+                content: content,
+                attachmentID: attachmentID,
+                in: itemID
+            )
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func deleteAnnotationComment(
+        _ commentID: UUID,
+        attachmentID: UUID,
+        in itemID: UUID
+    ) -> String? {
+        do {
+            try workflow.deleteAnnotationComment(
+                commentID,
+                attachmentID: attachmentID,
+                in: itemID
+            )
             return nil
         } catch {
             return error.localizedDescription

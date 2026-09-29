@@ -30,26 +30,34 @@ struct LibraryView: View {
   @State private var showingItemEditor = false
   @State private var showingDoiLookup = false
   @State private var pendingItemDraft: ItemDraft?
+  @State private var doiUpdateItem: LibraryItem?
+  @State private var pendingDOIUpdateItem: LibraryItem?
+  @State private var pendingDOIUpdateMetadata: DOIMetadata?
+  @State private var doiUpdatePreview: DOIUpdatePreview?
   @State private var showingNewFolder = false
   @State private var showingAttachmentImporter = false
   @State private var pendingAttachmentImport: AttachmentImportRequest?
   @State private var lastItemClick: (id: UUID, time: TimeInterval)?
+  @State private var contextMenuTargetItemID: UUID?
   @State private var editingItem: LibraryItem?
   @State private var actionError: String?
 
-  private var selectedItemID: UUID? {
-    get { viewModel.selectedItemID }
-    nonmutating set { viewModel.selectedItemID = newValue }
+  private var selectedItemIDsBinding: Binding<Set<UUID>> {
+    Binding(
+      get: { viewModel.selectedItemIDs },
+      set: { viewModel.updateSelectedItemIDs($0) }
+    )
   }
 
-  private var selectedItemIDBinding: Binding<UUID?> {
-    Bindable(viewModel).selectedItemID
+  private var filteredItemIDs: [UUID] {
+    viewModel.filteredItems.map(\.id)
   }
 
   private var selectedItem: LibraryItem? {
-    guard let selectedItemID else { return nil }
-    return viewModel.filteredItems.first(where: { $0.id == selectedItemID })
+    guard let focusedItemID = viewModel.focusedItemID else { return nil }
+    return viewModel.filteredItems.first(where: { $0.id == focusedItemID })
   }
+
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
       sidebar
@@ -79,7 +87,7 @@ struct LibraryView: View {
     } content: {
       itemList
         .navigationTitle(selectedFolderTitle)
-        .navigationSubtitle("\(viewModel.filteredItems.count) items")
+        .navigationSubtitle(navigationSubtitle)
         .navigationSplitViewColumnWidth(min: contentMinimumWidth, ideal: contentIdealWidth)
         .toolbar {
           ToolbarItemGroup(placement: .automatic) {
@@ -138,7 +146,7 @@ struct LibraryView: View {
         )
         .toolbar {
           if !splitViewState.isDetailCollapsed {
-            if let selectedItem {
+            if viewModel.selectedItemIDs.count == 1, let selectedItem {
               ToolbarItemGroup(placement: .primaryAction) {
                 Button("Edit", systemImage: "pencil") {
                   editingItem = selectedItem
@@ -171,17 +179,10 @@ struct LibraryView: View {
     .background(SplitViewPriorityConfigurator())
     .task {
       viewModel.load()
-      if selectedItemID == nil {
-        selectedItemID = viewModel.filteredItems.first?.id
-      }
+      viewModel.reconcileSelection(visibleItemIDs: filteredItemIDs)
     }
-    .onChange(of: viewModel.selectedFolder) {
-      selectedItemID = viewModel.filteredItems.first?.id
-    }
-    .onChange(of: viewModel.attachmentFilter) {
-      if let current = selectedItemID, !viewModel.filteredItems.contains(where: { $0.id == current }) {
-        selectedItemID = viewModel.filteredItems.first?.id
-      }
+    .onChange(of: filteredItemIDs) { _, visibleItemIDs in
+      viewModel.reconcileSelection(visibleItemIDs: visibleItemIDs)
     }
     .fileImporter(
       isPresented: $showingAttachmentImporter,
@@ -219,6 +220,16 @@ struct LibraryView: View {
     }) {
       DoiLookupView { draft in
         pendingItemDraft = draft
+      }
+    }
+    .sheet(item: $doiUpdateItem, onDismiss: finishDOIUpdateLookup) { item in
+      DoiLookupView(doi: item.doi ?? "") { metadata in
+        pendingDOIUpdateMetadata = metadata
+      }
+    }
+    .sheet(item: $doiUpdatePreview) { preview in
+      DOIUpdateComparisonView(preview: preview) { plan in
+        viewModel.applyDOIUpdate(plan)
       }
     }
     .sheet(item: $editingItem) { item in
@@ -298,7 +309,7 @@ struct LibraryView: View {
     if viewModel.filteredItems.isEmpty {
       emptyState
     } else {
-      List(selection: selectedItemIDBinding) {
+      List(selection: selectedItemIDsBinding) {
         ForEach(viewModel.filteredItems) { item in
           ItemRow(item: item)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -309,16 +320,16 @@ struct LibraryView: View {
                 openAttachment(mainAttachment, for: item)
               }
             })
-            .contextMenu {
-              itemContextMenu(for: item)
+            .onHover { isHovering in
+              if isHovering {
+                contextMenuTargetItemID = item.id
+              }
             }
         }
       }
       .listStyle(.inset)
-      .onChange(of: viewModel.filteredItems.first?.id) { _, firstID in
-        if selectedItemID == nil {
-          selectedItemID = firstID
-        }
+      .contextMenu(forSelectionType: UUID.self) { selectedIDs in
+        selectionContextMenu(for: selectedIDs)
       }
     }
   }
@@ -349,8 +360,8 @@ struct LibraryView: View {
   @ViewBuilder
   private var detailPanel: some View {
     Group {
-      if let selectedItemID,
-         let item = viewModel.filteredItems.first(where: { $0.id == selectedItemID }) {
+      if let focusedItemID = viewModel.focusedItemID,
+         let item = viewModel.filteredItems.first(where: { $0.id == focusedItemID }) {
         ItemDetailView(item: item) { attachment in
           openAttachment(attachment, for: item)
         }
@@ -367,46 +378,88 @@ struct LibraryView: View {
   }
 
   @ViewBuilder
-  private func itemContextMenu(for item: LibraryItem) -> some View {
+  private func selectionContextMenu(for selectedIDs: Set<UUID>) -> some View {
+    let visibleIDs = Set(viewModel.filteredItems.map(\.id))
+    let selection = selectedIDs.intersection(visibleIDs)
+    let contextItemID = contextMenuTargetItemID
+      ?? viewModel.focusedItemID.flatMap { selection.contains($0) ? $0 : nil }
+      ?? viewModel.filteredItems.first(where: { selection.contains($0.id) })?.id
+
+    if !selection.isEmpty,
+       let contextItemID,
+       let item = viewModel.filteredItems.first(where: { $0.id == contextItemID }) {
+      let targetItemIDs = selection.contains(item.id) ? selection : Set([item.id])
+      itemContextMenu(for: item, targetItemIDs: targetItemIDs)
+    }
+  }
+
+  @ViewBuilder
+  private func itemContextMenu(for item: LibraryItem, targetItemIDs: Set<UUID>) -> some View {
+
     if item.isTrashed {
-      Button("Restore Item", systemImage: "arrow.uturn.backward") {
-        actionError = viewModel.restore(item)
+      Section("This Item") {
+        Button("Restore Item", systemImage: "arrow.uturn.backward") {
+          viewModel.focusItem(item.id)
+          actionError = viewModel.restore(item)
+        }
       }
     } else {
-      Button("Edit", systemImage: "pencil") {
-        editingItem = item
-      }
-      Menu("Add File", systemImage: "paperclip") {
-        ForEach(AttachmentRole.allCases) { role in
-          Button("\(role.menuTitle)…") {
-            pendingAttachmentImport = AttachmentImportRequest(itemID: item.id, role: role)
-            showingAttachmentImporter = true
-          }
+      Section("This Item") {
+        Button("Edit", systemImage: "pencil") {
+          viewModel.focusItem(item.id)
+          editingItem = item
         }
-      }
-      if !item.attachments.isEmpty {
-        Menu("Open File", systemImage: "doc") {
-          ForEach(item.attachments) { attachment in
-            Button("\(attachment.role.menuTitle) · \(attachment.fileName)") {
-              openAttachment(attachment, for: item)
+        Button("Update by DOI…", systemImage: "arrow.triangle.2.circlepath") {
+          beginDOIUpdate(for: item)
+        }
+        Menu("Add File", systemImage: "paperclip") {
+          ForEach(AttachmentRole.allCases) { role in
+            Button("\(role.menuTitle)…") {
+              viewModel.focusItem(item.id)
+              pendingAttachmentImport = AttachmentImportRequest(itemID: item.id, role: role)
+              showingAttachmentImporter = true
             }
           }
         }
+        if !item.attachments.isEmpty {
+          Menu("Open File", systemImage: "doc") {
+            ForEach(item.attachments) { attachment in
+              Button("\(attachment.role.menuTitle) · \(attachment.fileName)") {
+                viewModel.focusItem(item.id)
+                openAttachment(attachment, for: item)
+              }
+            }
+          }
+        }
+        Button("Move to Recycle Bin", systemImage: "trash") {
+          viewModel.focusItem(item.id)
+          actionError = viewModel.moveToTrash(item)
+        }
       }
+
       if !viewModel.folders.isEmpty {
-        Menu("Add to Folder", systemImage: "folder") {
-          ForEach(viewModel.folders) { folder in
-            Button(folder.name) {
-              actionError = viewModel.addItem(item, to: folder)
+        Section(targetItemIDs.count > 1 ? "Selected Items (\(targetItemIDs.count))" : "This Item") {
+          Menu(
+            targetItemIDs.count > 1 ? "Add \(targetItemIDs.count) to Folder" : "Add to Folder",
+            systemImage: "folder"
+          ) {
+            ForEach(viewModel.folders) { folder in
+              Button(folder.name) {
+                viewModel.focusItem(item.id)
+                actionError = viewModel.addItems(targetItemIDs, to: folder)
+              }
+              .disabled(!canAddItems(targetItemIDs, to: folder.id))
             }
-            .disabled(item.folderIDs.contains(folder.id))
           }
         }
-      }
-      Button("Move to Recycle Bin", systemImage: "trash") {
-        actionError = viewModel.moveToTrash(item)
       }
     }
+  }
+
+  private func canAddItems(_ itemIDs: Set<UUID>, to folderID: UUID) -> Bool {
+    viewModel.items
+      .filter { itemIDs.contains($0.id) }
+      .contains { !$0.folderIDs.contains(folderID) }
   }
 
   private func openAttachment(_ attachment: LibraryAttachment, for item: LibraryItem) {
@@ -422,8 +475,33 @@ struct LibraryView: View {
     }
   }
 
+  private func beginDOIUpdate(for item: LibraryItem) {
+    viewModel.focusItem(item.id)
+    guard item.doi.flatMap(DOIString.normalize) != nil else {
+      actionError = DOIUpdateError.missingDOI.localizedDescription
+      return
+    }
+    doiUpdateItem = item
+    pendingDOIUpdateItem = item
+  }
+
+  private func finishDOIUpdateLookup() {
+    if let item = pendingDOIUpdateItem ?? doiUpdateItem,
+       let metadata = pendingDOIUpdateMetadata {
+      switch viewModel.prepareDOIUpdate(for: item, remote: metadata) {
+      case let .success(preview):
+        doiUpdatePreview = preview
+      case let .failure(error):
+        actionError = error.localizedDescription
+      }
+    }
+    pendingDOIUpdateMetadata = nil
+    pendingDOIUpdateItem = nil
+    doiUpdateItem = nil
+  }
+
   private func handleItemClick(_ item: LibraryItem) {
-    selectedItemID = item.id
+    viewModel.focusItem(item.id)
     let now = ProcessInfo.processInfo.systemUptime
     if let lastItemClick,
        lastItemClick.id == item.id,
@@ -437,6 +515,14 @@ struct LibraryView: View {
     } else {
       lastItemClick = (item.id, now)
     }
+  }
+
+  private var navigationSubtitle: String {
+    let itemCount = viewModel.filteredItems.count
+    let selectedCount = viewModel.selectedItemIDs.count
+    return selectedCount > 1
+      ? "\(itemCount) items · \(selectedCount) selected"
+      : "\(itemCount) items"
   }
 
   private var selectedFolderTitle: String {

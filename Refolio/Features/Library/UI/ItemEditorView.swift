@@ -139,11 +139,11 @@ struct ItemEditorView: View {
                 issue: optionalText(issue),
                 pageRange: optionalText(pageRange),
                 urlString: optionalText(url),
+                publicationTitle: optionalText(publicationTitle),
+                literatureType: optionalText(publicationTitle) == nil ? nil : literatureType,
                 authorNames: authorLines
                     .components(separatedBy: .newlines)
-                    .compactMap(optionalText),
-                publicationTitle: optionalText(publicationTitle),
-                literatureType: optionalText(publicationTitle) == nil ? nil : literatureType
+                    .compactMap(optionalText)
             )
 
             if let error = onSave(draft) {
