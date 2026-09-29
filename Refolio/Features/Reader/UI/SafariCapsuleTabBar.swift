@@ -132,8 +132,7 @@ private struct SafariCapsuleTabItem: View {
             }
             Divider()
             Button("Show in Library") {
-                viewModel.selectedItemID = request.itemID
-                viewModel.workspaceMode = .library
+                viewModel.showItemInLibrary(request.itemID)
             }
         }
         .help(title)

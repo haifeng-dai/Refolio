@@ -339,9 +339,12 @@ struct TranslationFloatingPopover: View {
     @Bindable var viewModel: TranslationViewModel
     let onOpenDetailPanel: () -> Void
     var onClose: (() -> Void)? = nil
+    var onHighlight: (() -> String?)? = nil
     var onContentSizeChange: (() -> Void)? = nil
 
     @State private var isCopied: Bool = false
+    @State private var highlightMessage: String?
+    @State private var highlightFailed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -394,6 +397,26 @@ struct TranslationFloatingPopover: View {
             }
 
             Divider()
+
+            Button {
+                guard let onHighlight else { return }
+                let error = onHighlight()
+                highlightFailed = error != nil
+                highlightMessage = error ?? "已保存高亮"
+                onContentSizeChange?()
+            } label: {
+                Label("高亮所选文字", systemImage: "highlighter")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            .disabled(onHighlight == nil)
+
+            if let highlightMessage {
+                Text(highlightMessage)
+                    .font(.caption2)
+                    .foregroundStyle(highlightFailed ? Color.red : Color.gray)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             // 译文内容
             if viewModel.isLoading && viewModel.translatedText.isEmpty {
